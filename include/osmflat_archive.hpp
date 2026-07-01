@@ -102,11 +102,12 @@ public:
                       bool include_nodes, bool include_ways, bool include_relations,
                       const std::vector<OsmflatStrRef>& keys,
                       const std::vector<OsmflatKvRef>& filters,
-                      OsmflatOrder order) const {
+                      OsmflatOrder order, double simplify_tolerance) const {
         return feature_set(osmflat_query(handle_, min_x, min_y, max_x, max_y,
                                          include_nodes, include_ways, include_relations,
                                          keys.data(), keys.size(),
-                                         filters.data(), filters.size(), order));
+                                         filters.data(), filters.size(), order,
+                                         simplify_tolerance));
     }
 
 private:

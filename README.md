@@ -50,6 +50,7 @@ include path is added automatically via `brew --prefix`.
 | `tags`     | no       | comma-separated `key=value` / `key=*` | tag prefilter, e.g. `highway=*` or `natural=water,natural=wood` |
 | `numeric`  | no       | comma-separated keys | expose these tags as numbers so `[lanes] > 2` compares numerically |
 | `order`    | no       | `z_order`\|`way_area`\|`none` | draw order of returned features (default spatial); `z_order` for roads, `way_area` (desc) for areas |
+| `simplify` | no       | pixels (float, default `0.5`) | scale-aware Douglas–Peucker tolerance; geometry generalized to sub-pixel per zoom. `0` disables |
 
 The datasource is **semantically neutral**: nodes → points, ways → line strings
 (open *and* closed alike — no area heuristics). The style decides fill vs. stroke
@@ -113,3 +114,10 @@ this cut render time from **≈32 s → ≈7.5 s** with byte-identical output.
 `tags` must stay a superset of what the rules match, or you'll drop features; it's
 a performance hint, not a substitute for `<Filter>`. See `test/style-full.xml`,
 whose layers set `ext`/`tags` per layer.
+
+The `simplify` param (default 0.5 px, on) generalizes geometry to sub-pixel using
+the query resolution — scale-aware, so it self-adjusts at every zoom. It's
+visually lossless and reduces the vertex count mapnik rasterizes, but note it runs
+*after* materialization, so it doesn't cut the wide-zoom bottleneck (materializing
+the pushed-down features) — tightening `tags` is the lever for that. `way_area` is
+computed from full-resolution geometry, before simplification.

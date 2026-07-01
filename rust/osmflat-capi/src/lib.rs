@@ -277,6 +277,7 @@ pub unsafe extern "C" fn osmflat_query(
     filters: *const OsmflatKvRef,
     num_filters: usize,
     order: OsmflatOrder,
+    simplify_tolerance: f64,
 ) -> *mut OsmflatFeatureSet {
     let Some(handle) = archive.as_ref() else {
         return std::ptr::null_mut();
@@ -348,13 +349,13 @@ pub unsafe extern "C" fn osmflat_query(
             Some(indices) => features.extend(
                 indices
                     .into_iter()
-                    .filter_map(|i| materialize_way(archive, i as usize, scale, &key_refs)),
+                    .filter_map(|i| materialize_way(archive, i as usize, scale, simplify_tolerance, &key_refs)),
             ),
             None => {
                 let base = archive.ways().as_ptr();
                 for way in find_ways_by_bounding_box(archive, min_x, min_y, max_x, max_y) {
                     let idx = (way as *const Way).offset_from(base) as usize;
-                    if let Some(f) = materialize_way(archive, idx, scale, &key_refs) {
+                    if let Some(f) = materialize_way(archive, idx, scale, simplify_tolerance, &key_refs) {
                         features.push(f);
                     }
                 }
@@ -367,13 +368,13 @@ pub unsafe extern "C" fn osmflat_query(
             Some(indices) => features.extend(
                 indices
                     .into_iter()
-                    .filter_map(|i| materialize_relation(archive, i as usize, scale, &key_refs)),
+                    .filter_map(|i| materialize_relation(archive, i as usize, scale, simplify_tolerance, &key_refs)),
             ),
             None => {
                 let base = archive.relations().as_ptr();
                 for relation in find_relations_by_bounding_box(archive, min_x, min_y, max_x, max_y) {
                     let idx = (relation as *const Relation).offset_from(base) as usize;
-                    if let Some(f) = materialize_relation(archive, idx, scale, &key_refs) {
+                    if let Some(f) = materialize_relation(archive, idx, scale, simplify_tolerance, &key_refs) {
                         features.push(f);
                     }
                 }
@@ -524,6 +525,64 @@ fn compute_z_order(archive: &Osm, tags: std::ops::Range<u64>) -> i32 {
     layer * 10000 + band + class
 }
 
+/// Douglas–Peucker simplification of an interleaved `[x0, y0, ...]` polyline,
+/// dropping vertices within `tol` (map units, i.e. degrees) of the retained
+/// line. Endpoints are always kept, so a closed ring stays closed. `min_pts`
+/// guards against collapsing a line/ring below a usable vertex count.
+fn simplify_coords(coords: &[f64], tol: f64, min_pts: usize) -> Vec<f64> {
+    let n = coords.len() / 2;
+    if tol <= 0.0 || n <= min_pts {
+        return coords.to_vec();
+    }
+    let pt = |i: usize| (coords[2 * i], coords[2 * i + 1]);
+    let mut keep = vec![false; n];
+    keep[0] = true;
+    keep[n - 1] = true;
+    let tol2 = tol * tol;
+    let mut stack = vec![(0usize, n - 1)];
+    while let Some((s, e)) = stack.pop() {
+        if e <= s + 1 {
+            continue;
+        }
+        let (ax, ay) = pt(s);
+        let (bx, by) = pt(e);
+        let (dx, dy) = (bx - ax, by - ay);
+        let seg2 = dx * dx + dy * dy;
+        let mut max_d2 = 0.0;
+        let mut split = s;
+        for i in (s + 1)..e {
+            let (px, py) = pt(i);
+            // Squared distance from point to segment a–b (clamped).
+            let d2 = if seg2 == 0.0 {
+                (px - ax).powi(2) + (py - ay).powi(2)
+            } else {
+                let t = (((px - ax) * dx + (py - ay) * dy) / seg2).clamp(0.0, 1.0);
+                (px - (ax + t * dx)).powi(2) + (py - (ay + t * dy)).powi(2)
+            };
+            if d2 > max_d2 {
+                max_d2 = d2;
+                split = i;
+            }
+        }
+        if max_d2 > tol2 {
+            keep[split] = true;
+            stack.push((s, split));
+            stack.push((split, e));
+        }
+    }
+    if keep.iter().filter(|&&k| k).count() < min_pts {
+        return coords.to_vec();
+    }
+    let mut out = Vec::with_capacity(coords.len());
+    for i in 0..n {
+        if keep[i] {
+            out.push(coords[2 * i]);
+            out.push(coords[2 * i + 1]);
+        }
+    }
+    out
+}
+
 /// Net area (m²) of a multipolygon: each polygon's exterior minus its holes.
 fn multipolygon_area_m2(polygons: &[Vec<Vec<f64>>]) -> f64 {
     polygons
@@ -551,7 +610,13 @@ fn materialize_node(archive: &Osm, idx: usize, scale: f64, keys: &[&[u8]]) -> Ow
     }
 }
 
-fn materialize_way(archive: &Osm, idx: usize, scale: f64, keys: &[&[u8]]) -> Option<OwnedFeature> {
+fn materialize_way(
+    archive: &Osm,
+    idx: usize,
+    scale: f64,
+    tol: f64,
+    keys: &[&[u8]],
+) -> Option<OwnedFeature> {
     let way = &archive.ways()[idx];
     let refs = way.refs();
     let (begin, end) = (refs.start as usize, refs.end as usize);
@@ -573,7 +638,9 @@ fn materialize_way(archive: &Osm, idx: usize, scale: f64, keys: &[&[u8]]) -> Opt
     let is_closed = end > begin
         && nodes_index[begin].value().is_some()
         && nodes_index[begin].value() == nodes_index[end - 1].value();
+    // way_area is computed from the full-resolution ring, before simplification.
     let way_area = if is_closed { ring_area_m2(&coords) } else { 0.0 };
+    let coords = simplify_coords(&coords, tol, if is_closed { 4 } else { 2 });
 
     Some(OwnedFeature {
         osm_id: way_id(archive, idx),
@@ -592,6 +659,7 @@ fn materialize_relation(
     archive: &Osm,
     idx: usize,
     scale: f64,
+    tol: f64,
     keys: &[&[u8]],
 ) -> Option<OwnedFeature> {
     let relation = &archive.relations()[idx];
@@ -602,7 +670,16 @@ fn materialize_relation(
     if polygons.is_empty() {
         return None;
     }
+    // Area from full-resolution rings, then simplify each ring for output.
     let way_area = multipolygon_area_m2(&polygons);
+    let polygons: Vec<Vec<Vec<f64>>> = polygons
+        .into_iter()
+        .map(|poly| {
+            poly.into_iter()
+                .map(|ring| simplify_coords(&ring, tol, 4))
+                .collect()
+        })
+        .collect();
     Some(OwnedFeature {
         osm_id: relation_id(archive, idx),
         osm_type: OsmflatOsmType::Relation,

@@ -63,6 +63,10 @@ private:
     // Draw order from the `order` param (default None = spatial order).
     OsmflatOrder order_ = OsmflatOrder::OsmflatOrder_None;
 
+    // Simplification tolerance in pixels (the `simplify` param); 0 disables.
+    // Converted to map units per query from the query resolution.
+    double simplify_px_ = 0.5;
+
     std::shared_ptr<archive> archive_;
 };
 

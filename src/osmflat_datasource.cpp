@@ -6,7 +6,8 @@
 #include <mapnik/feature_factory.hpp>
 #include <mapnik/value/types.hpp>
 
-#include <stdexcept>
+#include <algorithm>
+#include <tuple>
 
 namespace osmflat {
 
@@ -118,6 +119,14 @@ void osmflat_datasource::init(mapnik::parameters const& params)
         }
     }
 
+    // `simplify`: Douglas–Peucker tolerance in pixels (0 disables). Applied
+    // scale-aware — the map-unit tolerance is derived per query from the
+    // resolution, so geometry is generalized to sub-pixel at every zoom.
+    std::optional<double> simplify = params.get<double>("simplify");
+    if (simplify) {
+        simplify_px_ = *simplify;
+    }
+
     // Synthetic attributes always available; tag attributes are dynamic
     // (query-driven) and so are not advertised here.
     desc_.add_descriptor(mapnik::attribute_descriptor("osm_id", mapnik::Integer));
@@ -208,9 +217,22 @@ mapnik::featureset_ptr osmflat_datasource::features(mapnik::query const& q) cons
     std::vector<OsmflatStrRef> refs = key_refs(keys);
     std::vector<OsmflatKvRef> filters = filter_refs(tag_filters_);
 
+    // Scale-aware tolerance: `resolution` is pixels per map unit, so one pixel
+    // is 1/res map units. Simplify at `simplify_px_` pixels.
+    double tol = 0.0;
+    if (simplify_px_ > 0.0) {
+        auto const& res = q.resolution();
+        double res_x = std::get<0>(res);
+        double res_y = std::get<1>(res);
+        double r = std::min(res_x, res_y);
+        if (r > 0.0) {
+            tol = simplify_px_ / r;
+        }
+    }
+
     feature_set fs = archive_->query(
         bbox.minx(), bbox.miny(), bbox.maxx(), bbox.maxy(),
-        kinds_.nodes, kinds_.ways, kinds_.relations, refs, filters, order_);
+        kinds_.nodes, kinds_.ways, kinds_.relations, refs, filters, order_, tol);
 
     return std::make_shared<osmflat_featureset>(std::move(fs), std::move(keys), numeric_keys_);
 }
@@ -224,7 +246,8 @@ mapnik::featureset_ptr osmflat_datasource::features_at_point(mapnik::coord2d con
 
     feature_set fs = archive_->query(
         pt.x - tol, pt.y - tol, pt.x + tol, pt.y + tol,
-        kinds_.nodes, kinds_.ways, kinds_.relations, refs, filters, order_);
+        kinds_.nodes, kinds_.ways, kinds_.relations, refs, filters, order_,
+        0.0);   // no simplification for point queries
 
     return std::make_shared<osmflat_featureset>(std::move(fs), std::move(keys), numeric_keys_);
 }
