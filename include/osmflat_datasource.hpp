@@ -60,6 +60,9 @@ private:
     // Tag keys from the `numeric` param to coerce to numeric attributes.
     std::set<std::string> numeric_keys_;
 
+    // Draw order from the `order` param (default None = spatial order).
+    OsmflatOrder order_ = OsmflatOrder::OsmflatOrder_None;
+
     std::shared_ptr<archive> archive_;
 };
 

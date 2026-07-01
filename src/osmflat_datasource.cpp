@@ -107,19 +107,32 @@ void osmflat_datasource::init(mapnik::parameters const& params)
         }
     }
 
+    // `order`: draw order applied to returned features (default spatial).
+    std::optional<std::string> order = params.get<std::string>("order");
+    if (order) {
+        if (*order == "z_order") { order_ = OsmflatOrder::OsmflatOrder_ZOrder; }
+        else if (*order == "way_area") { order_ = OsmflatOrder::OsmflatOrder_WayArea; }
+        else if (*order == "none") { order_ = OsmflatOrder::OsmflatOrder_None; }
+        else {
+            throw mapnik::datasource_exception("osmflat: 'order' must be z_order|way_area|none");
+        }
+    }
+
     // Synthetic attributes always available; tag attributes are dynamic
     // (query-driven) and so are not advertised here.
     desc_.add_descriptor(mapnik::attribute_descriptor("osm_id", mapnik::Integer));
     desc_.add_descriptor(mapnik::attribute_descriptor("osm_type", mapnik::String));
     desc_.add_descriptor(mapnik::attribute_descriptor("is_closed", mapnik::Boolean));
     desc_.add_descriptor(mapnik::attribute_descriptor("way_area", mapnik::Double));
+    desc_.add_descriptor(mapnik::attribute_descriptor("z_order", mapnik::Integer));
 }
 
 // Synthetic attribute names handled directly by the featureset; excluded from
-// the tag keys sent to the query.
+// the tag keys sent to the query (otherwise they'd be double-handled).
 static bool is_synthetic_attr(std::string const& name)
 {
-    return name == "osm_id" || name == "osm_type" || name == "is_closed";
+    return name == "osm_id" || name == "osm_type" || name == "is_closed"
+        || name == "way_area" || name == "z_order";
 }
 
 // Builds the ordered list of requested tag names from the query's referenced
@@ -197,7 +210,7 @@ mapnik::featureset_ptr osmflat_datasource::features(mapnik::query const& q) cons
 
     feature_set fs = archive_->query(
         bbox.minx(), bbox.miny(), bbox.maxx(), bbox.maxy(),
-        kinds_.nodes, kinds_.ways, kinds_.relations, refs, filters);
+        kinds_.nodes, kinds_.ways, kinds_.relations, refs, filters, order_);
 
     return std::make_shared<osmflat_featureset>(std::move(fs), std::move(keys), numeric_keys_);
 }
@@ -211,7 +224,7 @@ mapnik::featureset_ptr osmflat_datasource::features_at_point(mapnik::coord2d con
 
     feature_set fs = archive_->query(
         pt.x - tol, pt.y - tol, pt.x + tol, pt.y + tol,
-        kinds_.nodes, kinds_.ways, kinds_.relations, refs, filters);
+        kinds_.nodes, kinds_.ways, kinds_.relations, refs, filters, order_);
 
     return std::make_shared<osmflat_featureset>(std::move(fs), std::move(keys), numeric_keys_);
 }

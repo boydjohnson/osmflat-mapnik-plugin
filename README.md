@@ -49,6 +49,7 @@ include path is added automatically via `brew --prefix`.
 | `ext`      | no       | path                | Ext sidecar dir (`*.osm.ext`) enabling tag push-down |
 | `tags`     | no       | comma-separated `key=value` / `key=*` | tag prefilter, e.g. `highway=*` or `natural=water,natural=wood` |
 | `numeric`  | no       | comma-separated keys | expose these tags as numbers so `[lanes] > 2` compares numerically |
+| `order`    | no       | `z_order`\|`way_area`\|`none` | draw order of returned features (default spatial); `z_order` for roads, `way_area` (desc) for areas |
 
 The datasource is **semantically neutral**: nodes → points, ways → line strings
 (open *and* closed alike — no area heuristics). The style decides fill vs. stroke
@@ -59,9 +60,11 @@ member ways into `multi_polygon` geometry (outer rings + holes).
 **Attributes are query-driven:** each feature exposes exactly the tags the active
 style references (`[highway]`, `[natural]`, …), null-filled when absent, plus
 synthetic facts: `osm_id` (Integer, real OSM id), `osm_type`
-(String: node/way/relation), `is_closed` (Boolean), and `way_area` (Double,
+(String: node/way/relation), `is_closed` (Boolean), `way_area` (Double,
 enclosed area in spherical m² for closed ways / multipolygons; 0 otherwise —
-e.g. `[way_area] > 1000000` for areas over 1 km²).
+e.g. `[way_area] > 1000000` for areas over 1 km²), and `z_order` (Integer,
+osm2pgsql-style render priority = `layer*10000 + bridge/tunnel band + highway
+class rank`; also drives the `order=z_order` sort).
 
 ## Smoke test
 

@@ -39,6 +39,7 @@ public:
     OsmflatOsmType osm_type() const { return osmflat_feature_osm_type(fs_); }
     bool is_closed() const { return osmflat_feature_is_closed(fs_); }
     double way_area() const { return osmflat_feature_way_area(fs_); }
+    int32_t z_order() const { return osmflat_feature_z_order(fs_); }
     OsmflatGeomType geom_type() const { return osmflat_feature_geom_type(fs_); }
 
     std::size_t num_coords() const { return osmflat_feature_num_coords(fs_); }
@@ -100,11 +101,12 @@ public:
     feature_set query(double min_x, double min_y, double max_x, double max_y,
                       bool include_nodes, bool include_ways, bool include_relations,
                       const std::vector<OsmflatStrRef>& keys,
-                      const std::vector<OsmflatKvRef>& filters) const {
+                      const std::vector<OsmflatKvRef>& filters,
+                      OsmflatOrder order) const {
         return feature_set(osmflat_query(handle_, min_x, min_y, max_x, max_y,
                                          include_nodes, include_ways, include_relations,
                                          keys.data(), keys.size(),
-                                         filters.data(), filters.size()));
+                                         filters.data(), filters.size(), order));
     }
 
 private:

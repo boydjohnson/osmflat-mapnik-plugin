@@ -59,6 +59,7 @@ osmflat_featureset::osmflat_featureset(feature_set&& fs, std::vector<std::string
     ctx_->push("osm_type");
     ctx_->push("is_closed");
     ctx_->push("way_area");
+    ctx_->push("z_order");
     for (auto const& k : keys_) {
         ctx_->push(k);
     }
@@ -126,6 +127,7 @@ mapnik::feature_ptr osmflat_featureset::next()
     feature->put("osm_type", mapnik::value_unicode_string::fromUTF8(osm_type_name(fs_.osm_type())));
     feature->put("is_closed", static_cast<mapnik::value_bool>(fs_.is_closed()));
     feature->put("way_area", static_cast<mapnik::value_double>(fs_.way_area()));
+    feature->put("z_order", static_cast<mapnik::value_integer>(fs_.z_order()));
 
     // Requested tags: value or null, aligned to keys_. Keys listed in the
     // datasource `numeric` param are coerced to numbers so filters compare

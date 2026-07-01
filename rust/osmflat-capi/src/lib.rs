@@ -45,6 +45,17 @@ pub enum OsmflatOsmType {
     Relation = 2,
 }
 
+/// Draw order applied to the returned features (the `order` datasource param).
+#[repr(u32)]
+pub enum OsmflatOrder {
+    /// Spatial (space-filling-curve) order — the default, no sorting.
+    None = 0,
+    /// Ascending `z_order`: minor features under major, bridges last (roads).
+    ZOrder = 1,
+    /// Descending `way_area`: large areas under small, so small stay visible.
+    WayArea = 2,
+}
+
 /// A borrowed key handed *in* from C++ (a name from `query::property_names()`),
 /// as raw UTF-8 bytes without a trailing NUL.
 #[repr(C)]
@@ -115,6 +126,9 @@ struct OwnedFeature {
     osm_type: OsmflatOsmType,
     geom_type: OsmflatGeomType,
     is_closed: bool,
+    /// osm2pgsql-style render priority: `layer*10000 + bridge/tunnel band +
+    /// highway class rank`. Higher draws on top; used by the `order` param.
+    z_order: i32,
     /// Enclosed area in square meters (spherical), for closed ways and
     /// multipolygon relations; 0 for points and open ways.
     way_area: f64,
@@ -262,6 +276,7 @@ pub unsafe extern "C" fn osmflat_query(
     num_keys: usize,
     filters: *const OsmflatKvRef,
     num_filters: usize,
+    order: OsmflatOrder,
 ) -> *mut OsmflatFeatureSet {
     let Some(handle) = archive.as_ref() else {
         return std::ptr::null_mut();
@@ -366,6 +381,15 @@ pub unsafe extern "C" fn osmflat_query(
         }
     }
 
+    // Apply the requested draw order (mapnik renders in the returned order).
+    match order {
+        OsmflatOrder::ZOrder => features.sort_by_key(|f| f.z_order),
+        OsmflatOrder::WayArea => {
+            features.sort_by(|a, b| b.way_area.partial_cmp(&a.way_area).unwrap_or(std::cmp::Ordering::Equal))
+        }
+        OsmflatOrder::None => {}
+    }
+
     Box::into_raw(Box::new(OsmflatFeatureSet { features, pos: 0 }))
 }
 
@@ -460,6 +484,46 @@ fn ring_area_m2(coords: &[f64]) -> f64 {
     (sum * R * R / 2.0).abs()
 }
 
+/// Highway-class render rank (0–99); the finest term of `z_order`. Non-highway
+/// features get 0. Tunable — mirrors osm2pgsql's road importance ordering.
+fn highway_rank(hw: &[u8]) -> i32 {
+    match hw {
+        b"motorway" | b"motorway_link" => 90,
+        b"trunk" | b"trunk_link" => 80,
+        b"primary" | b"primary_link" => 70,
+        b"secondary" | b"secondary_link" => 60,
+        b"tertiary" | b"tertiary_link" => 50,
+        b"residential" | b"unclassified" | b"living_street" => 40,
+        b"service" => 30,
+        b"track" => 20,
+        b"path" | b"footway" | b"cycleway" | b"steps" | b"pedestrian" => 10,
+        _ => 5,
+    }
+}
+
+/// osm2pgsql-style render priority for a feature from its tags:
+/// `layer*10000 + bridge/tunnel band + highway class rank`.
+fn compute_z_order(archive: &Osm, tags: std::ops::Range<u64>) -> i32 {
+    let layer = find_tag(archive, tags.clone(), b"layer")
+        .and_then(|v| std::str::from_utf8(v).ok())
+        .and_then(|s| s.trim().parse::<i32>().ok())
+        .unwrap_or(0);
+    let class = match find_tag(archive, tags.clone(), b"highway") {
+        Some(hw) => highway_rank(hw),
+        None => 0,
+    };
+    let is_bridge = find_tag(archive, tags.clone(), b"bridge").is_some_and(|v| v != b"no");
+    let is_tunnel = find_tag(archive, tags.clone(), b"tunnel").is_some_and(|v| v != b"no");
+    let band = if is_bridge {
+        100
+    } else if is_tunnel {
+        -100
+    } else {
+        0
+    };
+    layer * 10000 + band + class
+}
+
 /// Net area (m²) of a multipolygon: each polygon's exterior minus its holes.
 fn multipolygon_area_m2(polygons: &[Vec<Vec<f64>>]) -> f64 {
     polygons
@@ -479,6 +543,7 @@ fn materialize_node(archive: &Osm, idx: usize, scale: f64, keys: &[&[u8]]) -> Ow
         osm_type: OsmflatOsmType::Node,
         geom_type: OsmflatGeomType::Point,
         is_closed: false,
+        z_order: compute_z_order(archive, node.tags()),
         way_area: 0.0,
         coords: vec![node.lon() as f64 / scale, node.lat() as f64 / scale],
         polygons: Vec::new(),
@@ -515,6 +580,7 @@ fn materialize_way(archive: &Osm, idx: usize, scale: f64, keys: &[&[u8]]) -> Opt
         osm_type: OsmflatOsmType::Way,
         geom_type: OsmflatGeomType::LineString,
         is_closed,
+        z_order: compute_z_order(archive, way.tags()),
         way_area,
         coords,
         polygons: Vec::new(),
@@ -542,6 +608,7 @@ fn materialize_relation(
         osm_type: OsmflatOsmType::Relation,
         geom_type: OsmflatGeomType::MultiPolygon,
         is_closed: true,
+        z_order: compute_z_order(archive, relation.tags()),
         way_area,
         coords: Vec::new(),
         polygons,
@@ -767,6 +834,18 @@ pub unsafe extern "C" fn osmflat_feature_way_area(fs: *const OsmflatFeatureSet) 
         .and_then(|fs| fs.current())
         .map(|f| f.way_area)
         .unwrap_or(0.0)
+}
+
+/// osm2pgsql-style render priority of the current feature.
+///
+/// # Safety
+/// `fs` must be a valid handle from `osmflat_query`.
+#[no_mangle]
+pub unsafe extern "C" fn osmflat_feature_z_order(fs: *const OsmflatFeatureSet) -> i32 {
+    fs.as_ref()
+        .and_then(|fs| fs.current())
+        .map(|f| f.z_order)
+        .unwrap_or(0)
 }
 
 /// Geometry type of the current feature.

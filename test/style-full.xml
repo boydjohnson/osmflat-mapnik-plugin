@@ -253,6 +253,7 @@
       <Parameter name="file">@ARCHIVE@</Parameter>
       <Parameter name="ext">@EXT@</Parameter>
       <Parameter name="tags">natural=*,waterway=*,landuse=*,leisure=*</Parameter>
+      <Parameter name="order">way_area</Parameter>
       <Parameter name="osm_type">way,relation</Parameter>
     </Datasource>
   </Layer>
@@ -264,6 +265,7 @@
       <Parameter name="file">@ARCHIVE@</Parameter>
       <Parameter name="ext">@EXT@</Parameter>
       <Parameter name="tags">building=*</Parameter>
+      <Parameter name="order">way_area</Parameter>
       <Parameter name="osm_type">way,relation</Parameter>
     </Datasource>
   </Layer>
@@ -278,6 +280,7 @@
       <Parameter name="file">@ARCHIVE@</Parameter>
       <Parameter name="ext">@EXT@</Parameter>
       <Parameter name="tags">highway=*</Parameter>
+      <Parameter name="order">z_order</Parameter>
       <Parameter name="osm_type">way</Parameter>
     </Datasource>
   </Layer>
