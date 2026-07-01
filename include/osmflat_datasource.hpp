@@ -10,6 +10,7 @@
 #include <mapnik/coord.hpp>
 
 #include <memory>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -55,6 +56,9 @@ private:
     // Tag prefilter from the `tags` param: (key, value); empty value == key=*.
     // Stored stably so the query can borrow the bytes.
     std::vector<std::pair<std::string, std::string>> tag_filters_;
+
+    // Tag keys from the `numeric` param to coerce to numeric attributes.
+    std::set<std::string> numeric_keys_;
 
     std::shared_ptr<archive> archive_;
 };

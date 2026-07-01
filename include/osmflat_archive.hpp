@@ -38,6 +38,7 @@ public:
     bool osm_id(uint64_t& out) const { return osmflat_feature_osm_id(fs_, &out); }
     OsmflatOsmType osm_type() const { return osmflat_feature_osm_type(fs_); }
     bool is_closed() const { return osmflat_feature_is_closed(fs_); }
+    double way_area() const { return osmflat_feature_way_area(fs_); }
     OsmflatGeomType geom_type() const { return osmflat_feature_geom_type(fs_); }
 
     std::size_t num_coords() const { return osmflat_feature_num_coords(fs_); }

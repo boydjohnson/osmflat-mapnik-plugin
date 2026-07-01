@@ -115,6 +115,9 @@ struct OwnedFeature {
     osm_type: OsmflatOsmType,
     geom_type: OsmflatGeomType,
     is_closed: bool,
+    /// Enclosed area in square meters (spherical), for closed ways and
+    /// multipolygon relations; 0 for points and open ways.
+    way_area: f64,
     /// Point/line vertices, interleaved `[x0, y0, x1, y1, ...]` in degrees
     /// (EPSG:4326). Empty for `MultiPolygon` features (see `polygons`).
     coords: Vec<f64>,
@@ -437,6 +440,38 @@ fn candidate_indices(
     Some(all)
 }
 
+/// Spherical area (m²) of a ring given as interleaved `[lon, lat, ...]` degrees.
+/// Sign-independent (returns the absolute area), so winding order doesn't matter.
+fn ring_area_m2(coords: &[f64]) -> f64 {
+    const R: f64 = 6_378_137.0; // WGS84 equatorial radius
+    let n = coords.len() / 2;
+    if n < 3 {
+        return 0.0;
+    }
+    let mut sum = 0.0;
+    for i in 0..n {
+        let j = (i + 1) % n;
+        let lon1 = coords[2 * i].to_radians();
+        let lat1 = coords[2 * i + 1].to_radians();
+        let lon2 = coords[2 * j].to_radians();
+        let lat2 = coords[2 * j + 1].to_radians();
+        sum += (lon2 - lon1) * (2.0 + lat1.sin() + lat2.sin());
+    }
+    (sum * R * R / 2.0).abs()
+}
+
+/// Net area (m²) of a multipolygon: each polygon's exterior minus its holes.
+fn multipolygon_area_m2(polygons: &[Vec<Vec<f64>>]) -> f64 {
+    polygons
+        .iter()
+        .map(|poly| {
+            let outer = poly.first().map(|r| ring_area_m2(r)).unwrap_or(0.0);
+            let holes: f64 = poly.iter().skip(1).map(|r| ring_area_m2(r)).sum();
+            (outer - holes).max(0.0)
+        })
+        .sum()
+}
+
 fn materialize_node(archive: &Osm, idx: usize, scale: f64, keys: &[&[u8]]) -> OwnedFeature {
     let node = &archive.nodes()[idx];
     OwnedFeature {
@@ -444,6 +479,7 @@ fn materialize_node(archive: &Osm, idx: usize, scale: f64, keys: &[&[u8]]) -> Ow
         osm_type: OsmflatOsmType::Node,
         geom_type: OsmflatGeomType::Point,
         is_closed: false,
+        way_area: 0.0,
         coords: vec![node.lon() as f64 / scale, node.lat() as f64 / scale],
         polygons: Vec::new(),
         attrs: collect_attrs(archive, node.tags(), keys),
@@ -472,12 +508,14 @@ fn materialize_way(archive: &Osm, idx: usize, scale: f64, keys: &[&[u8]]) -> Opt
     let is_closed = end > begin
         && nodes_index[begin].value().is_some()
         && nodes_index[begin].value() == nodes_index[end - 1].value();
+    let way_area = if is_closed { ring_area_m2(&coords) } else { 0.0 };
 
     Some(OwnedFeature {
         osm_id: way_id(archive, idx),
         osm_type: OsmflatOsmType::Way,
         geom_type: OsmflatGeomType::LineString,
         is_closed,
+        way_area,
         coords,
         polygons: Vec::new(),
         attrs: collect_attrs(archive, way.tags(), keys),
@@ -498,11 +536,13 @@ fn materialize_relation(
     if polygons.is_empty() {
         return None;
     }
+    let way_area = multipolygon_area_m2(&polygons);
     Some(OwnedFeature {
         osm_id: relation_id(archive, idx),
         osm_type: OsmflatOsmType::Relation,
         geom_type: OsmflatGeomType::MultiPolygon,
         is_closed: true,
+        way_area,
         coords: Vec::new(),
         polygons,
         attrs: collect_attrs(archive, relation.tags(), keys),
@@ -714,6 +754,19 @@ pub unsafe extern "C" fn osmflat_feature_is_closed(fs: *const OsmflatFeatureSet)
         .and_then(|fs| fs.current())
         .map(|f| f.is_closed)
         .unwrap_or(false)
+}
+
+/// Enclosed area of the current feature in square meters (spherical); 0 for
+/// points and open ways.
+///
+/// # Safety
+/// `fs` must be a valid handle from `osmflat_query`.
+#[no_mangle]
+pub unsafe extern "C" fn osmflat_feature_way_area(fs: *const OsmflatFeatureSet) -> f64 {
+    fs.as_ref()
+        .and_then(|fs| fs.current())
+        .map(|f| f.way_area)
+        .unwrap_or(0.0)
 }
 
 /// Geometry type of the current feature.

@@ -98,11 +98,21 @@ void osmflat_datasource::init(mapnik::parameters const& params)
     auto e = archive_->envelope();
     extent_ = mapnik::box2d<double>(e[0], e[1], e[2], e[3]);
 
-    // Synthetic geometric-fact attributes always available; tag attributes are
-    // dynamic (query-driven) and so are not advertised here.
+    // `numeric`: comma-separated tag keys to expose as numbers (opt-in), so
+    // filters like `[lanes] > 2` compare numerically instead of as strings.
+    std::optional<std::string> numeric = params.get<std::string>("numeric");
+    if (numeric) {
+        for (auto const& kv : parse_tag_filters(*numeric)) {
+            numeric_keys_.insert(kv.first);   // reuse the CSV/key parser
+        }
+    }
+
+    // Synthetic attributes always available; tag attributes are dynamic
+    // (query-driven) and so are not advertised here.
     desc_.add_descriptor(mapnik::attribute_descriptor("osm_id", mapnik::Integer));
     desc_.add_descriptor(mapnik::attribute_descriptor("osm_type", mapnik::String));
     desc_.add_descriptor(mapnik::attribute_descriptor("is_closed", mapnik::Boolean));
+    desc_.add_descriptor(mapnik::attribute_descriptor("way_area", mapnik::Double));
 }
 
 // Synthetic attribute names handled directly by the featureset; excluded from
@@ -189,7 +199,7 @@ mapnik::featureset_ptr osmflat_datasource::features(mapnik::query const& q) cons
         bbox.minx(), bbox.miny(), bbox.maxx(), bbox.maxy(),
         kinds_.nodes, kinds_.ways, kinds_.relations, refs, filters);
 
-    return std::make_shared<osmflat_featureset>(std::move(fs), std::move(keys));
+    return std::make_shared<osmflat_featureset>(std::move(fs), std::move(keys), numeric_keys_);
 }
 
 mapnik::featureset_ptr osmflat_datasource::features_at_point(mapnik::coord2d const& pt, double tol) const
@@ -203,7 +213,7 @@ mapnik::featureset_ptr osmflat_datasource::features_at_point(mapnik::coord2d con
         pt.x - tol, pt.y - tol, pt.x + tol, pt.y + tol,
         kinds_.nodes, kinds_.ways, kinds_.relations, refs, filters);
 
-    return std::make_shared<osmflat_featureset>(std::move(fs), std::move(keys));
+    return std::make_shared<osmflat_featureset>(std::move(fs), std::move(keys), numeric_keys_);
 }
 
 } // namespace osmflat

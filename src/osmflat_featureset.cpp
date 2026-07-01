@@ -4,6 +4,9 @@
 #include <mapnik/geometry.hpp>
 #include <mapnik/value/types.hpp>
 
+#include <cerrno>
+#include <cstdlib>
+
 namespace osmflat {
 
 namespace {
@@ -18,16 +21,44 @@ const char* osm_type_name(OsmflatOsmType t)
     }
 }
 
+// Puts a value coerced to a number under `key`: an integer when it parses
+// exactly, else a double, else null (a `numeric` key whose value isn't numeric,
+// e.g. "50 mph"). Mirrors PostGIS `col::int` semantics for filters like
+// `[lanes] > 2`.
+void put_numeric(mapnik::feature_ptr const& feature, std::string const& key, std::string const& value)
+{
+    const char* begin = value.c_str();
+    char* end = nullptr;
+
+    errno = 0;
+    long long as_int = std::strtoll(begin, &end, 10);
+    if (end == begin + value.size() && errno == 0) {
+        feature->put(key, static_cast<mapnik::value_integer>(as_int));
+        return;
+    }
+
+    errno = 0;
+    double as_double = std::strtod(begin, &end);
+    if (end == begin + value.size() && errno == 0) {
+        feature->put(key, static_cast<mapnik::value_double>(as_double));
+        return;
+    }
+
+    feature->put(key, mapnik::value_null());
+}
+
 } // namespace
 
-osmflat_featureset::osmflat_featureset(feature_set&& fs, std::vector<std::string> keys)
-    : fs_(std::move(fs)), keys_(std::move(keys))
+osmflat_featureset::osmflat_featureset(feature_set&& fs, std::vector<std::string> keys,
+                                       std::set<std::string> numeric_keys)
+    : fs_(std::move(fs)), keys_(std::move(keys)), numeric_keys_(std::move(numeric_keys))
 {
     // Fixed schema shared by every feature in this query.
     ctx_ = std::make_shared<mapnik::context_type>();
     ctx_->push("osm_id");
     ctx_->push("osm_type");
     ctx_->push("is_closed");
+    ctx_->push("way_area");
     for (auto const& k : keys_) {
         ctx_->push(k);
     }
@@ -94,14 +125,19 @@ mapnik::feature_ptr osmflat_featureset::next()
     }
     feature->put("osm_type", mapnik::value_unicode_string::fromUTF8(osm_type_name(fs_.osm_type())));
     feature->put("is_closed", static_cast<mapnik::value_bool>(fs_.is_closed()));
+    feature->put("way_area", static_cast<mapnik::value_double>(fs_.way_area()));
 
-    // Requested tags: value or null, aligned to keys_.
+    // Requested tags: value or null, aligned to keys_. Keys listed in the
+    // datasource `numeric` param are coerced to numbers so filters compare
+    // numerically (e.g. [lanes] > 2).
     std::string value;
     for (std::size_t i = 0; i < keys_.size(); ++i) {
-        if (fs_.attr(i, value)) {
-            feature->put(keys_[i], mapnik::value_unicode_string::fromUTF8(value));
-        } else {
+        if (!fs_.attr(i, value)) {
             feature->put(keys_[i], mapnik::value_null());
+        } else if (numeric_keys_.count(keys_[i])) {
+            put_numeric(feature, keys_[i], value);
+        } else {
+            feature->put(keys_[i], mapnik::value_unicode_string::fromUTF8(value));
         }
     }
 

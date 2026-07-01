@@ -48,6 +48,7 @@ include path is added automatically via `brew --prefix`.
 | `osm_type` | no       | comma-separated `node`\|`way`\|`relation`\|`all` | primitives to emit (default all); e.g. `way,relation` |
 | `ext`      | no       | path                | Ext sidecar dir (`*.osm.ext`) enabling tag push-down |
 | `tags`     | no       | comma-separated `key=value` / `key=*` | tag prefilter, e.g. `highway=*` or `natural=water,natural=wood` |
+| `numeric`  | no       | comma-separated keys | expose these tags as numbers so `[lanes] > 2` compares numerically |
 
 The datasource is **semantically neutral**: nodes → points, ways → line strings
 (open *and* closed alike — no area heuristics). The style decides fill vs. stroke
@@ -57,8 +58,10 @@ member ways into `multi_polygon` geometry (outer rings + holes).
 
 **Attributes are query-driven:** each feature exposes exactly the tags the active
 style references (`[highway]`, `[natural]`, …), null-filled when absent, plus
-synthetic geometric facts: `osm_id` (Integer, real OSM id), `osm_type`
-(String: node/way/relation), `is_closed` (Boolean).
+synthetic facts: `osm_id` (Integer, real OSM id), `osm_type`
+(String: node/way/relation), `is_closed` (Boolean), and `way_area` (Double,
+enclosed area in spherical m² for closed ways / multipolygons; 0 otherwise —
+e.g. `[way_area] > 1000000` for areas over 1 km²).
 
 ## Smoke test
 

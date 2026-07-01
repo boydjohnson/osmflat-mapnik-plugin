@@ -5,6 +5,7 @@
 #include <mapnik/featureset.hpp>
 
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -24,12 +25,14 @@ namespace osmflat {
 class osmflat_featureset : public mapnik::Featureset
 {
 public:
-    osmflat_featureset(feature_set&& fs, std::vector<std::string> keys);
+    osmflat_featureset(feature_set&& fs, std::vector<std::string> keys,
+                       std::set<std::string> numeric_keys);
     mapnik::feature_ptr next() override;
 
 private:
     feature_set fs_;
     std::vector<std::string> keys_;   // requested tag names, aligned to attr(i)
+    std::set<std::string> numeric_keys_;  // subset of keys_ to coerce to numbers
     mapnik::context_ptr ctx_;
     mapnik::value_integer feature_id_ = 0;   // mapnik FID (unique within query)
 };
