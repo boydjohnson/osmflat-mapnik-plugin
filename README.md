@@ -47,17 +47,27 @@ include path is added automatically via `brew --prefix`.
 | `file`     | yes      | path                | the `*.osm.flat` archive dir     |
 | `osm_type` | no       | `node`\|`way`\|`all`| primitives to emit (default all) |
 
-Nodes are emitted as points, ways as line strings, each carrying its OSM tags
-as feature attributes plus an `osm_id` field. (Relation/polygon support is not
-yet implemented.)
+The datasource is **semantically neutral**: nodes → points, ways → line strings
+(open *and* closed alike — no area heuristics). The style decides fill vs. stroke
+per tag (mapnik's `PolygonSymbolizer` fills a closed ring, `LineSymbolizer`
+strokes it). Multipolygon-relation → `polygon`/`multipolygon` is a later phase.
+
+**Attributes are query-driven:** each feature exposes exactly the tags the active
+style references (`[highway]`, `[natural]`, …), null-filled when absent, plus
+synthetic geometric facts: `osm_id` (Integer, real OSM id), `osm_type`
+(String: node/way/relation), `is_closed` (Boolean).
 
 ## Smoke test
+
+Loads the plugin through mapnik's `datasource_cache`, applies `test/style.xml`
+(base gray ways + red `[highway]='primary'`), and renders a PNG:
 
 ```sh
 cmake -S . -B build -DBUILD_RENDER_TEST=ON
 cmake --build build
-./build/render <archive_dir> ./build/plugins out.png <minx> <miny> <maxx> <maxy>
+./build/render ./build/plugins <style.xml> <archive_dir> out.png \
+    <minx> <miny> <maxx> <maxy>
 # e.g. Mexico City:
-./build/render ../osmflat-rs/mexico.osm.flat ./build/plugins mexico.png \
-    -99.30 19.20 -98.95 19.60
+./build/render ./build/plugins ./test/style.xml \
+    ../osmflat-rs/mexico.osm.flat mexico.png -99.30 19.20 -98.95 19.60
 ```

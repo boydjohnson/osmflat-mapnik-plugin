@@ -5,7 +5,7 @@
 #include <cstdint>
 #include <stdexcept>
 #include <string>
-#include <utility>
+#include <vector>
 
 #include "osmflat_capi.hpp"
 
@@ -34,22 +34,25 @@ public:
     /// Advance to the next feature; false when exhausted.
     bool next() { return fs_ && osmflat_featureset_next(fs_); }
 
-    uint64_t id() const { return osmflat_feature_id(fs_); }
+    /// Real OSM id of the current feature; false if the archive has none.
+    bool osm_id(uint64_t& out) const { return osmflat_feature_osm_id(fs_, &out); }
+    OsmflatOsmType osm_type() const { return osmflat_feature_osm_type(fs_); }
+    bool is_closed() const { return osmflat_feature_is_closed(fs_); }
     OsmflatGeomType geom_type() const { return osmflat_feature_geom_type(fs_); }
 
     std::size_t num_coords() const { return osmflat_feature_num_coords(fs_); }
     const double* coords() const { return osmflat_feature_coords(fs_); }
 
-    std::size_t num_tags() const { return osmflat_feature_num_tags(fs_); }
-    std::string tag_key(std::size_t i) const { return to_string(osmflat_feature_tag_key(fs_, i)); }
-    std::string tag_value(std::size_t i) const { return to_string(osmflat_feature_tag_value(fs_, i)); }
-
-private:
-    static std::string to_string(OsmflatBytes b) {
-        if (!b.ptr || b.len == 0) { return std::string(); }
-        return std::string(reinterpret_cast<const char*>(b.ptr), b.len);
+    /// Value of the `i`th requested attribute (aligned to the query's keys).
+    /// Returns false when the tag is absent (→ render as null).
+    bool attr(std::size_t i, std::string& out) const {
+        OsmflatValue v = osmflat_feature_attr(fs_, i);
+        if (!v.present) { return false; }
+        out.assign(reinterpret_cast<const char*>(v.ptr), v.len);
+        return true;
     }
 
+private:
     OsmflatFeatureSet* fs_;
 };
 
@@ -76,11 +79,14 @@ public:
         return e;
     }
 
-    /// Bounding-box query. Returns an owning `feature_set`.
+    /// Bounding-box query. `keys` are the tag names to materialize (borrowed;
+    /// their bytes must outlive the call). Returns an owning `feature_set`.
     feature_set query(double min_x, double min_y, double max_x, double max_y,
-                      bool include_nodes, bool include_ways) const {
+                      bool include_nodes, bool include_ways,
+                      const std::vector<OsmflatStrRef>& keys) const {
         return feature_set(osmflat_query(handle_, min_x, min_y, max_x, max_y,
-                                         include_nodes, include_ways));
+                                         include_nodes, include_ways,
+                                         keys.data(), keys.size()));
     }
 
 private:
