@@ -43,6 +43,18 @@ public:
     std::size_t num_coords() const { return osmflat_feature_num_coords(fs_); }
     const double* coords() const { return osmflat_feature_coords(fs_); }
 
+    // MultiPolygon geometry (geom_type == MultiPolygon).
+    std::size_t num_polygons() const { return osmflat_feature_num_polygons(fs_); }
+    std::size_t polygon_num_rings(std::size_t p) const {
+        return osmflat_feature_polygon_num_rings(fs_, p);
+    }
+    std::size_t ring_num_coords(std::size_t p, std::size_t r) const {
+        return osmflat_feature_ring_num_coords(fs_, p, r);
+    }
+    const double* ring_coords(std::size_t p, std::size_t r) const {
+        return osmflat_feature_ring_coords(fs_, p, r);
+    }
+
     /// Value of the `i`th requested attribute (aligned to the query's keys).
     /// Returns false when the tag is absent (→ render as null).
     bool attr(std::size_t i, std::string& out) const {
@@ -82,10 +94,10 @@ public:
     /// Bounding-box query. `keys` are the tag names to materialize (borrowed;
     /// their bytes must outlive the call). Returns an owning `feature_set`.
     feature_set query(double min_x, double min_y, double max_x, double max_y,
-                      bool include_nodes, bool include_ways,
+                      bool include_nodes, bool include_ways, bool include_relations,
                       const std::vector<OsmflatStrRef>& keys) const {
         return feature_set(osmflat_query(handle_, min_x, min_y, max_x, max_y,
-                                         include_nodes, include_ways,
+                                         include_nodes, include_ways, include_relations,
                                          keys.data(), keys.size()));
     }
 

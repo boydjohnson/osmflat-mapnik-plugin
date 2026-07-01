@@ -20,17 +20,18 @@ use std::os::raw::c_char;
 use std::slice;
 
 use osmflat::{
-    find_nodes_by_bounding_box, find_tag, find_ways_by_bounding_box, node_id, way_id,
-    FileResourceStorage, Node, Osm, Way,
+    find_nodes_by_bounding_box, find_relations_by_bounding_box, find_tag, find_ways_by_bounding_box,
+    node_id, relation_id, way_id, FileResourceStorage, Node, Osm, Relation, RelationMembersRef, Way,
 };
 
-/// Geometry kind of a materialized feature. `Polygon` is reserved for phase-2
-/// multipolygon-relation support and is not yet emitted.
+/// Geometry kind of a materialized feature.
 #[repr(u32)]
 pub enum OsmflatGeomType {
     Point = 1,
     LineString = 2,
     Polygon = 3,
+    /// Assembled from a `type=multipolygon`/`boundary` relation's member ways.
+    MultiPolygon = 4,
 }
 
 /// OSM primitive a feature came from.
@@ -71,8 +72,13 @@ struct OwnedFeature {
     osm_type: OsmflatOsmType,
     geom_type: OsmflatGeomType,
     is_closed: bool,
-    /// Interleaved `[x0, y0, x1, y1, ...]` in degrees (EPSG:4326).
+    /// Point/line vertices, interleaved `[x0, y0, x1, y1, ...]` in degrees
+    /// (EPSG:4326). Empty for `MultiPolygon` features (see `polygons`).
     coords: Vec<f64>,
+    /// `MultiPolygon` geometry: `polygons[p][r]` is ring `r` of polygon `p` as
+    /// interleaved coords; ring 0 is the exterior, rings 1.. are holes. Empty
+    /// for point/line features.
+    polygons: Vec<Vec<Vec<f64>>>,
     /// Values aligned to the query's requested keys; `None` == tag absent.
     attrs: Vec<Option<Vec<u8>>>,
 }
@@ -165,10 +171,12 @@ fn collect_attrs(
 }
 
 /// Runs a bounding-box query and returns an owned feature set. `min_*`/`max_*`
-/// are degrees (lon = x, lat = y). `include_nodes`/`include_ways` select which
-/// primitives to emit (a performance filter, not semantics). `keys`/`num_keys`
-/// are the tag names to materialize (from `query::property_names()`, synthetic
-/// names already stripped by the caller). Free with `osmflat_featureset_free`.
+/// are degrees (lon = x, lat = y). `include_nodes`/`include_ways`/
+/// `include_relations` select which primitives to emit (a performance filter,
+/// not semantics); relations are emitted only for `type=multipolygon`/`boundary`
+/// as assembled multipolygons. `keys`/`num_keys` are the tag names to
+/// materialize (from `query::property_names()`, synthetic names already stripped
+/// by the caller). Free with `osmflat_featureset_free`.
 ///
 /// # Safety
 /// `archive` must be valid; `keys` must point to `num_keys` valid `OsmflatStrRef`
@@ -182,6 +190,7 @@ pub unsafe extern "C" fn osmflat_query(
     max_y: f64,
     include_nodes: bool,
     include_ways: bool,
+    include_relations: bool,
     keys: *const OsmflatStrRef,
     num_keys: usize,
 ) -> *mut OsmflatFeatureSet {
@@ -220,6 +229,7 @@ pub unsafe extern "C" fn osmflat_query(
                 geom_type: OsmflatGeomType::Point,
                 is_closed: false,
                 coords: vec![x, y],
+                polygons: Vec::new(),
                 attrs: collect_attrs(archive, node.tags(), &key_refs),
             });
         }
@@ -259,12 +269,168 @@ pub unsafe extern "C" fn osmflat_query(
                 geom_type: OsmflatGeomType::LineString,
                 is_closed,
                 coords,
+                polygons: Vec::new(),
                 attrs: collect_attrs(archive, way.tags(), &key_refs),
             });
         }
     }
 
+    if include_relations {
+        let rel_base = archive.relations().as_ptr();
+        for relation in find_relations_by_bounding_box(archive, min_x, min_y, max_x, max_y) {
+            // Only area relations become geometry; routes etc. are skipped.
+            if !is_area_relation(archive, relation) {
+                continue;
+            }
+            let idx = (relation as *const Relation).offset_from(rel_base) as usize;
+            let polygons = assemble_multipolygon(archive, idx, scale);
+            if polygons.is_empty() {
+                continue;
+            }
+            features.push(OwnedFeature {
+                osm_id: relation_id(archive, idx),
+                osm_type: OsmflatOsmType::Relation,
+                geom_type: OsmflatGeomType::MultiPolygon,
+                is_closed: true,
+                coords: Vec::new(),
+                polygons,
+                attrs: collect_attrs(archive, relation.tags(), &key_refs),
+            });
+        }
+    }
+
     Box::into_raw(Box::new(OsmflatFeatureSet { features, pos: 0 }))
+}
+
+/// True if the relation is an area type whose member ways enclose polygons.
+fn is_area_relation(archive: &Osm, relation: &Relation) -> bool {
+    match find_tag(archive, relation.tags(), b"type") {
+        Some(v) => v == b"multipolygon" || v == b"boundary",
+        None => false,
+    }
+}
+
+/// Resolve a way's node-index sequence (dropping unresolved refs).
+fn way_node_indices(archive: &Osm, way: &Way) -> Vec<u64> {
+    let nodes_index = archive.nodes_index();
+    let refs = way.refs();
+    (refs.start as usize..refs.end as usize)
+        .filter_map(|i| nodes_index[i].value())
+        .collect()
+}
+
+/// Stitch open/closed member segments (each a node-index sequence) into closed
+/// rings by matching shared endpoints. Only rings that close are returned;
+/// unclosable leftovers (e.g. a member way outside a clipped extract) are dropped.
+fn assemble_rings(mut segments: Vec<Vec<u64>>) -> Vec<Vec<u64>> {
+    let mut rings = Vec::new();
+    while let Some(mut ring) = segments.pop() {
+        loop {
+            if ring.len() > 1 && ring.first() == ring.last() {
+                rings.push(ring);
+                break;
+            }
+            let end = *ring.last().unwrap();
+            // Find a remaining segment sharing this open endpoint.
+            let next = segments.iter().position(|s| {
+                s.first() == Some(&end) || s.last() == Some(&end)
+            });
+            match next {
+                Some(i) => {
+                    let mut seg = segments.remove(i);
+                    if seg.last() == Some(&end) {
+                        seg.reverse();
+                    }
+                    // seg now starts at `end`; append the rest, skipping the shared node.
+                    ring.extend_from_slice(&seg[1..]);
+                }
+                None => break, // cannot close; drop this partial ring
+            }
+        }
+    }
+    rings
+}
+
+/// Ray-casting point-in-polygon test against a ring of `(x, y)` vertices.
+fn point_in_ring(pt: (f64, f64), ring: &[(f64, f64)]) -> bool {
+    let (px, py) = pt;
+    let mut inside = false;
+    let n = ring.len();
+    let mut j = n - 1;
+    for i in 0..n {
+        let (xi, yi) = ring[i];
+        let (xj, yj) = ring[j];
+        if (yi > py) != (yj > py) && px < (xj - xi) * (py - yi) / (yj - yi) + xi {
+            inside = !inside;
+        }
+        j = i;
+    }
+    inside
+}
+
+/// Assemble a `type=multipolygon`/`boundary` relation into polygons, each an
+/// exterior ring followed by the holes it contains. Returns
+/// `polygons[p][r]` = interleaved `[x0, y0, ...]` coords for ring `r`.
+fn assemble_multipolygon(archive: &Osm, rel_idx: usize, scale: f64) -> Vec<Vec<Vec<f64>>> {
+    let members = archive.relation_members();
+    let ways = archive.ways();
+    let strings = archive.stringtable();
+
+    let mut outer_segs: Vec<Vec<u64>> = Vec::new();
+    let mut inner_segs: Vec<Vec<u64>> = Vec::new();
+    for member in members.at(rel_idx) {
+        let RelationMembersRef::WayMember(wm) = member else {
+            continue;
+        };
+        let Some(way_idx) = wm.way_idx() else { continue };
+        let seg = way_node_indices(archive, &ways[way_idx as usize]);
+        if seg.len() < 2 {
+            continue;
+        }
+        // Role "inner" carves holes; everything else (outer, empty) is exterior.
+        if strings.substring_raw(wm.role_idx() as usize) == b"inner" {
+            inner_segs.push(seg);
+        } else {
+            outer_segs.push(seg);
+        }
+    }
+
+    let outer_rings = assemble_rings(outer_segs);
+    let inner_rings = assemble_rings(inner_segs);
+
+    let nodes = archive.nodes();
+    let to_coords = |ring: &[u64]| -> Vec<(f64, f64)> {
+        ring.iter()
+            .map(|&n| {
+                let node = &nodes[n as usize];
+                (node.lon() as f64 / scale, node.lat() as f64 / scale)
+            })
+            .collect()
+    };
+    let flatten = |ring: &[(f64, f64)]| -> Vec<f64> {
+        ring.iter().flat_map(|&(x, y)| [x, y]).collect()
+    };
+
+    let outers: Vec<Vec<(f64, f64)>> = outer_rings.iter().map(|r| to_coords(r)).collect();
+    if outers.is_empty() {
+        return Vec::new();
+    }
+
+    // One polygon per exterior ring; assign each hole to the exterior that
+    // contains its first vertex.
+    let mut polygons: Vec<Vec<Vec<f64>>> = outers.iter().map(|o| vec![flatten(o)]).collect();
+    for inner in &inner_rings {
+        let inner_coords = to_coords(inner);
+        let Some(&first) = inner_coords.first() else {
+            continue;
+        };
+        if let Some(oi) = outers.iter().position(|o| point_in_ring(first, o)) {
+            polygons[oi].push(flatten(&inner_coords));
+        }
+        // A hole with no containing exterior is dropped (malformed relation).
+    }
+
+    polygons
 }
 
 /// Frees a feature set.
@@ -358,8 +524,74 @@ pub unsafe extern "C" fn osmflat_feature_geom_type(
     {
         Some(OsmflatGeomType::LineString) => OsmflatGeomType::LineString,
         Some(OsmflatGeomType::Polygon) => OsmflatGeomType::Polygon,
+        Some(OsmflatGeomType::MultiPolygon) => OsmflatGeomType::MultiPolygon,
         _ => OsmflatGeomType::Point,
     }
+}
+
+/// Number of polygons in a `MultiPolygon` feature (0 for point/line).
+///
+/// # Safety
+/// `fs` must be a valid handle from `osmflat_query`.
+#[no_mangle]
+pub unsafe extern "C" fn osmflat_feature_num_polygons(fs: *const OsmflatFeatureSet) -> usize {
+    fs.as_ref()
+        .and_then(|fs| fs.current())
+        .map(|f| f.polygons.len())
+        .unwrap_or(0)
+}
+
+/// Number of rings in polygon `p` (ring 0 is the exterior, rings 1.. are holes).
+///
+/// # Safety
+/// `fs` must be a valid handle from `osmflat_query`.
+#[no_mangle]
+pub unsafe extern "C" fn osmflat_feature_polygon_num_rings(
+    fs: *const OsmflatFeatureSet,
+    p: usize,
+) -> usize {
+    fs.as_ref()
+        .and_then(|fs| fs.current())
+        .and_then(|f| f.polygons.get(p))
+        .map(|poly| poly.len())
+        .unwrap_or(0)
+}
+
+/// Number of `(x, y)` vertices in ring `r` of polygon `p`.
+///
+/// # Safety
+/// `fs` must be a valid handle from `osmflat_query`.
+#[no_mangle]
+pub unsafe extern "C" fn osmflat_feature_ring_num_coords(
+    fs: *const OsmflatFeatureSet,
+    p: usize,
+    r: usize,
+) -> usize {
+    fs.as_ref()
+        .and_then(|fs| fs.current())
+        .and_then(|f| f.polygons.get(p))
+        .and_then(|poly| poly.get(r))
+        .map(|ring| ring.len() / 2)
+        .unwrap_or(0)
+}
+
+/// Pointer to ring `r` of polygon `p` as interleaved `[x0, y0, ...]` (length
+/// `2 * osmflat_feature_ring_num_coords`). Valid until the next advance / free.
+///
+/// # Safety
+/// `fs` must be a valid handle from `osmflat_query`.
+#[no_mangle]
+pub unsafe extern "C" fn osmflat_feature_ring_coords(
+    fs: *const OsmflatFeatureSet,
+    p: usize,
+    r: usize,
+) -> *const f64 {
+    fs.as_ref()
+        .and_then(|fs| fs.current())
+        .and_then(|f| f.polygons.get(p))
+        .and_then(|poly| poly.get(r))
+        .map(|ring| ring.as_ptr())
+        .unwrap_or(std::ptr::null())
 }
 
 /// Number of `(x, y)` vertices in the current feature's geometry.

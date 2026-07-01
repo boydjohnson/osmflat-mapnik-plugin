@@ -45,12 +45,13 @@ include path is added automatically via `brew --prefix`.
 |------------|----------|---------------------|----------------------------------|
 | `type`     | yes      | `osmflat`           | selects this plugin              |
 | `file`     | yes      | path                | the `*.osm.flat` archive dir     |
-| `osm_type` | no       | `node`\|`way`\|`all`| primitives to emit (default all) |
+| `osm_type` | no       | comma-separated `node`\|`way`\|`relation`\|`all` | primitives to emit (default all); e.g. `way,relation` |
 
 The datasource is **semantically neutral**: nodes → points, ways → line strings
 (open *and* closed alike — no area heuristics). The style decides fill vs. stroke
 per tag (mapnik's `PolygonSymbolizer` fills a closed ring, `LineSymbolizer`
-strokes it). Multipolygon-relation → `polygon`/`multipolygon` is a later phase.
+strokes it). `type=multipolygon`/`boundary` **relations** are assembled from their
+member ways into `multi_polygon` geometry (outer rings + holes).
 
 **Attributes are query-driven:** each feature exposes exactly the tags the active
 style references (`[highway]`, `[natural]`, …), null-filled when absent, plus
@@ -80,6 +81,7 @@ Example styles under `test/` (each uses `@ARCHIVE@` as the archive placeholder):
 | `style-full.xml`    | area fills, buildings, road hierarchy, POI markers |
 | `style-labels.xml`  | line-placement street labels + POI labels (needs fonts) |
 | `style-streets.xml` | urban street ramp: casing/fill tiers, oneway arrows, bridges, labels |
+| `style-relations.xml` | `type=multipolygon`/`boundary` relations as filled polygons with holes |
 
 The `style-streets.xml` tiers were chosen from real archive counts via
 `osmflat-taginfo` (see the project memory). Text styles need fonts registered —

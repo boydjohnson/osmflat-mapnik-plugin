@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Multipolygon-relation demo. osm_type=relation emits type=multipolygon/
+     boundary relations as assembled multi_polygons (outer rings + holes).
+     A catch-all outline rule shows every assembled relation; colored fills
+     show the tagged ones. Holes render as background showing through. -->
+<Map background-color="#ffffff" srs="+proj=longlat +datum=WGS84 +no_defs">
+
+  <Style name="relations">
+    <Rule>
+      <Filter>[natural]='water' or [waterway]!=''</Filter>
+      <PolygonSymbolizer fill="#9fc6e8"/>
+      <LineSymbolizer stroke="#6b93b8" stroke-width="0.4"/>
+    </Rule>
+    <Rule>
+      <Filter>[natural]='wood' or [landuse]='forest'</Filter>
+      <PolygonSymbolizer fill="#a5cf98"/>
+    </Rule>
+    <Rule>
+      <Filter>[leisure]='park' or [leisure]='garden' or [leisure]='pitch'</Filter>
+      <PolygonSymbolizer fill="#c7e5b0"/>
+    </Rule>
+    <Rule>
+      <Filter>[building]!=''</Filter>
+      <PolygonSymbolizer fill="#d9cbbe"/>
+      <LineSymbolizer stroke="#b6a493" stroke-width="0.4"/>
+    </Rule>
+    <Rule>
+      <Filter>[landuse]!='' and not ([landuse]='forest')</Filter>
+      <PolygonSymbolizer fill="#efe9dd"/>
+    </Rule>
+    <!-- Any other assembled multipolygon: thin outline so it's visible. -->
+    <Rule>
+      <ElseFilter/>
+      <LineSymbolizer stroke="#d080c0" stroke-width="0.5"/>
+    </Rule>
+  </Style>
+
+  <Layer name="relations" srs="+proj=longlat +datum=WGS84 +no_defs">
+    <StyleName>relations</StyleName>
+    <Datasource>
+      <Parameter name="type">osmflat</Parameter>
+      <Parameter name="file">@ARCHIVE@</Parameter>
+      <Parameter name="osm_type">relation</Parameter>
+    </Datasource>
+  </Layer>
+
+</Map>

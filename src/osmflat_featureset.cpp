@@ -61,6 +61,28 @@ mapnik::feature_ptr osmflat_featureset::next()
             feature->set_geometry(std::move(line));
             break;
         }
+        case OsmflatGeomType::OsmflatGeomType_MultiPolygon: {
+            mapnik::geometry::multi_polygon<double> mp;
+            std::size_t np = fs_.num_polygons();
+            mp.reserve(np);
+            for (std::size_t p = 0; p < np; ++p) {
+                mapnik::geometry::polygon<double> poly;
+                std::size_t nr = fs_.polygon_num_rings(p);
+                for (std::size_t r = 0; r < nr; ++r) {
+                    std::size_t rn = fs_.ring_num_coords(p, r);
+                    const double* rc = fs_.ring_coords(p, r);
+                    mapnik::geometry::linear_ring<double> ring;
+                    ring.reserve(rn);
+                    for (std::size_t i = 0; i < rn; ++i) {
+                        ring.emplace_back(rc[2 * i], rc[2 * i + 1]);
+                    }
+                    poly.push_back(std::move(ring));   // ring 0 = exterior, rest = holes
+                }
+                mp.push_back(std::move(poly));
+            }
+            feature->set_geometry(std::move(mp));
+            break;
+        }
     }
 
     // Synthetic geometric-fact attributes (always present).

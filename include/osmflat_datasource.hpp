@@ -16,8 +16,13 @@
 
 namespace osmflat {
 
-/// Which OSM primitive types the datasource emits.
-enum class query_kind { nodes, ways, all };
+/// Which OSM primitive types the datasource emits (a query-time performance
+/// filter). Selected via the comma-separated `osm_type` parameter.
+struct query_kinds {
+    bool nodes = true;
+    bool ways = true;
+    bool relations = true;
+};
 
 /// Mapnik vector datasource backed by an osmflat archive, queried by bounding
 /// box through the `osmflat-capi` Rust shim.
@@ -43,7 +48,7 @@ private:
     static const std::string name_;
     mapnik::layer_descriptor desc_;
     mapnik::box2d<double> extent_;
-    query_kind kind_;
+    query_kinds kinds_;
 
     std::shared_ptr<archive> archive_;
 };

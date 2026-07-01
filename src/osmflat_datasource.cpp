@@ -14,10 +14,34 @@ const std::string osmflat_datasource::name_ = "osmflat";
 
 osmflat_datasource::osmflat_datasource(mapnik::parameters const& params)
     : mapnik::datasource(params),
-      desc_(name_, "EPSG:4326"),
-      kind_(query_kind::all)
+      desc_(name_, "EPSG:4326")
 {
     init(params);
+}
+
+// Parses the comma-separated `osm_type` value (e.g. "way,relation") into the
+// set of primitives to emit. "all" (the default) enables everything.
+static query_kinds parse_kinds(std::string const& spec)
+{
+    query_kinds k{false, false, false};
+    std::size_t start = 0;
+    while (start <= spec.size()) {
+        std::size_t comma = spec.find(',', start);
+        std::string tok = spec.substr(start, comma == std::string::npos ? std::string::npos : comma - start);
+        // trim spaces
+        tok.erase(0, tok.find_first_not_of(" \t"));
+        tok.erase(tok.find_last_not_of(" \t") + 1);
+        if (tok == "all") { k = query_kinds{true, true, true}; }
+        else if (tok == "node") { k.nodes = true; }
+        else if (tok == "way") { k.ways = true; }
+        else if (tok == "relation") { k.relations = true; }
+        else if (!tok.empty()) {
+            throw mapnik::datasource_exception("osmflat: 'osm_type' tokens must be node|way|relation|all");
+        }
+        if (comma == std::string::npos) { break; }
+        start = comma + 1;
+    }
+    return k;
 }
 
 void osmflat_datasource::init(mapnik::parameters const& params)
@@ -27,15 +51,10 @@ void osmflat_datasource::init(mapnik::parameters const& params)
         throw mapnik::datasource_exception("osmflat: missing required parameter 'file' (archive directory)");
     }
 
-    // `osm_type`: node | way | all (default all).
+    // `osm_type`: comma-separated node|way|relation|all (default all).
     std::optional<std::string> osm_type = params.get<std::string>("osm_type");
     if (osm_type) {
-        if (*osm_type == "node") { kind_ = query_kind::nodes; }
-        else if (*osm_type == "way") { kind_ = query_kind::ways; }
-        else if (*osm_type == "all") { kind_ = query_kind::all; }
-        else {
-            throw mapnik::datasource_exception("osmflat: 'osm_type' must be one of node|way|all");
-        }
+        kinds_ = parse_kinds(*osm_type);
     }
 
     archive_ = std::make_shared<archive>(*file);
@@ -112,31 +131,25 @@ mapnik::featureset_ptr osmflat_datasource::features(mapnik::query const& q) cons
 {
     mapnik::box2d<double> const& bbox = q.get_bbox();
 
-    bool include_nodes = (kind_ == query_kind::nodes || kind_ == query_kind::all);
-    bool include_ways = (kind_ == query_kind::ways || kind_ == query_kind::all);
-
     std::vector<std::string> keys = requested_keys(q);
     std::vector<OsmflatStrRef> refs = key_refs(keys);
 
     feature_set fs = archive_->query(
         bbox.minx(), bbox.miny(), bbox.maxx(), bbox.maxy(),
-        include_nodes, include_ways, refs);
+        kinds_.nodes, kinds_.ways, kinds_.relations, refs);
 
     return std::make_shared<osmflat_featureset>(std::move(fs), std::move(keys));
 }
 
 mapnik::featureset_ptr osmflat_datasource::features_at_point(mapnik::coord2d const& pt, double tol) const
 {
-    bool include_nodes = (kind_ == query_kind::nodes || kind_ == query_kind::all);
-    bool include_ways = (kind_ == query_kind::ways || kind_ == query_kind::all);
-
     // No property list on this path; emit synthetics only.
     std::vector<std::string> keys;
     std::vector<OsmflatStrRef> refs;
 
     feature_set fs = archive_->query(
         pt.x - tol, pt.y - tol, pt.x + tol, pt.y + tol,
-        include_nodes, include_ways, refs);
+        kinds_.nodes, kinds_.ways, kinds_.relations, refs);
 
     return std::make_shared<osmflat_featureset>(std::move(fs), std::move(keys));
 }
