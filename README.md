@@ -71,3 +71,17 @@ cmake --build build
 ./build/render ./build/plugins ./test/style.xml \
     ../osmflat-rs/mexico.osm.flat mexico.png -99.30 19.20 -98.95 19.60
 ```
+
+Example styles under `test/` (each uses `@ARCHIVE@` as the archive placeholder):
+
+| style | shows |
+|-------|-------|
+| `style.xml`         | base ways + red `[highway]='primary'` filter |
+| `style-full.xml`    | area fills, buildings, road hierarchy, POI markers |
+| `style-labels.xml`  | line-placement street labels + POI labels (needs fonts) |
+| `style-streets.xml` | urban street ramp: casing/fill tiers, oneway arrows, bridges, labels |
+
+The `style-streets.xml` tiers were chosen from real archive counts via
+`osmflat-taginfo` (see the project memory). Text styles need fonts registered —
+the harness registers Homebrew's bundled DejaVu, overridable with
+`MAPNIK_FONT_DIR`.

@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Label demo. TextSymbolizer references [name], which is added to
+     query::property_names() and so materialized by the datasource. Shows:
+       - line placement for street names (works on our way line_strings)
+       - point placement for POI names (works on our nodes)
+     Area labels centered inside parks/water need polygon interior placement,
+     which is the multipolygon/phase-2 work. -->
+<Map background-color="#f4f2ee" srs="+proj=longlat +datum=WGS84 +no_defs">
+
+  <Style name="roads">
+    <Rule>
+      <Filter>[highway] != ''</Filter>
+      <LineSymbolizer stroke="#ffffff" stroke-width="3.0" stroke-linejoin="round" stroke-linecap="round"/>
+      <LineSymbolizer stroke="#d8d2c8" stroke-width="3.6" stroke-linejoin="round"/>
+    </Rule>
+  </Style>
+
+  <Style name="road-labels">
+    <Rule>
+      <Filter>[highway] != '' and [name] != ''</Filter>
+      <TextSymbolizer face-name="DejaVu Sans Book" size="11" fill="#40372c"
+                      halo-fill="#ffffff" halo-radius="1.5"
+                      placement="line" spacing="220" minimum-distance="30">[name]</TextSymbolizer>
+    </Rule>
+  </Style>
+
+  <Style name="pois">
+    <Rule>
+      <Filter>[amenity] != ''</Filter>
+      <MarkersSymbolizer marker-type="ellipse" fill="#d0605a" stroke="#7c2f2b" stroke-width="0.6" width="6" height="6" allow-overlap="true"/>
+      <TextSymbolizer face-name="DejaVu Sans Book" size="9" fill="#7c2f2b"
+                      halo-fill="#ffffff" halo-radius="1.2" dy="-8"
+                      minimum-distance="14">[name]</TextSymbolizer>
+    </Rule>
+  </Style>
+
+  <Layer name="roads" srs="+proj=longlat +datum=WGS84 +no_defs">
+    <StyleName>roads</StyleName>
+    <StyleName>road-labels</StyleName>
+    <Datasource>
+      <Parameter name="type">osmflat</Parameter>
+      <Parameter name="file">@ARCHIVE@</Parameter>
+      <Parameter name="osm_type">way</Parameter>
+    </Datasource>
+  </Layer>
+
+  <Layer name="points" srs="+proj=longlat +datum=WGS84 +no_defs">
+    <StyleName>pois</StyleName>
+    <Datasource>
+      <Parameter name="type">osmflat</Parameter>
+      <Parameter name="file">@ARCHIVE@</Parameter>
+      <Parameter name="osm_type">node</Parameter>
+    </Datasource>
+  </Layer>
+
+</Map>

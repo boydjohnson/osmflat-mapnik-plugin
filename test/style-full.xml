@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A fuller demo style exercising the osmflat plugin:
+       - query-time selection via osm_type (way vs node layers)
+       - render-time selection via <Filter> on tags
+       - polygon fills on closed ways, line strokes on ways, markers on nodes
+     Absent tags are null-filled, so [key] != '' means "has this key". -->
+<Map background-color="#f4f2ee" srs="+proj=longlat +datum=WGS84 +no_defs">
+
+  <!-- ============ AREAS: closed ways filled by tag ============ -->
+  <Style name="areas">
+    <Rule>
+      <Filter>[natural] = 'water' or [waterway] != ''</Filter>
+      <PolygonSymbolizer fill="#a5c9e8"/>
+    </Rule>
+    <Rule>
+      <Filter>[leisure] = 'park' or [leisure] = 'garden'</Filter>
+      <PolygonSymbolizer fill="#c9e2b3"/>
+    </Rule>
+    <Rule>
+      <Filter>[natural] = 'wood' or [landuse] = 'forest'</Filter>
+      <PolygonSymbolizer fill="#add098"/>
+    </Rule>
+    <Rule>
+      <Filter>[landuse] != '' and not ([landuse] = 'forest')</Filter>
+      <PolygonSymbolizer fill="#eae5da"/>
+    </Rule>
+  </Style>
+
+  <!-- ============ BUILDINGS ============ -->
+  <Style name="buildings">
+    <Rule>
+      <Filter>[building] != ''</Filter>
+      <PolygonSymbolizer fill="#d9cec3"/>
+      <LineSymbolizer stroke="#c2b4a5" stroke-width="0.3"/>
+    </Rule>
+  </Style>
+
+  <!-- ============ ROADS: strokes by highway class ============ -->
+  <Style name="roads">
+    <Rule>
+      <Filter>[highway] = 'motorway' or [highway] = 'trunk'</Filter>
+      <LineSymbolizer stroke="#e79080" stroke-width="3.0" stroke-linejoin="round" stroke-linecap="round"/>
+    </Rule>
+    <Rule>
+      <Filter>[highway] = 'primary'</Filter>
+      <LineSymbolizer stroke="#f0b070" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round"/>
+    </Rule>
+    <Rule>
+      <Filter>[highway] = 'secondary' or [highway] = 'tertiary'</Filter>
+      <LineSymbolizer stroke="#f7e08a" stroke-width="1.6" stroke-linejoin="round"/>
+    </Rule>
+    <Rule>
+      <Filter>[highway] = 'residential' or [highway] = 'unclassified' or [highway] = 'service' or [highway] = 'living_street'</Filter>
+      <LineSymbolizer stroke="#ffffff" stroke-width="1.0"/>
+    </Rule>
+  </Style>
+
+  <!-- ============ POINTS: amenity nodes as markers ============ -->
+  <Style name="pois">
+    <Rule>
+      <Filter>[amenity] != ''</Filter>
+      <MarkersSymbolizer marker-type="ellipse" fill="#d0605a" stroke="#7c2f2b" stroke-width="0.5" width="4" height="4" allow-overlap="true"/>
+    </Rule>
+  </Style>
+
+  <!-- Layers render bottom-to-top in document order. -->
+  <Layer name="areas" srs="+proj=longlat +datum=WGS84 +no_defs">
+    <StyleName>areas</StyleName>
+    <StyleName>buildings</StyleName>
+    <Datasource>
+      <Parameter name="type">osmflat</Parameter>
+      <Parameter name="file">@ARCHIVE@</Parameter>
+      <Parameter name="osm_type">way</Parameter>
+    </Datasource>
+  </Layer>
+
+  <Layer name="roads" srs="+proj=longlat +datum=WGS84 +no_defs">
+    <StyleName>roads</StyleName>
+    <Datasource>
+      <Parameter name="type">osmflat</Parameter>
+      <Parameter name="file">@ARCHIVE@</Parameter>
+      <Parameter name="osm_type">way</Parameter>
+    </Datasource>
+  </Layer>
+
+  <Layer name="points" srs="+proj=longlat +datum=WGS84 +no_defs">
+    <StyleName>pois</StyleName>
+    <Datasource>
+      <Parameter name="type">osmflat</Parameter>
+      <Parameter name="file">@ARCHIVE@</Parameter>
+      <Parameter name="osm_type">node</Parameter>
+    </Datasource>
+  </Layer>
+
+</Map>

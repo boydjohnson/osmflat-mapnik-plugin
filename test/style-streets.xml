@@ -1,0 +1,135 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Urban streets style for Mexico City, tiers chosen from real archive counts
+     (osmflat-taginfo). Demonstrates, all via the plugin's query-driven attrs:
+       - highway class ramp with casing (separate casing + fill passes so
+         casings tuck under fills at intersections)
+       - oneway direction arrows (MarkersSymbolizer arrow, line placement)
+       - bridge overlay ([bridge] filter, drawn on top)
+       - street-name line labels ([name])
+     Casing/fill are separate <Style> passes on one layer: mapnik runs each
+     style as a full pass, so every casing draws before any fill. -->
+<Map background-color="#ebe7df" srs="+proj=longlat +datum=WGS84 +no_defs">
+
+  <!-- ================= CASINGS (bottom pass) ================= -->
+  <Style name="streets-casing">
+    <Rule>
+      <Filter>[highway]='motorway' or [highway]='trunk' or [highway]='motorway_link' or [highway]='trunk_link'</Filter>
+      <LineSymbolizer stroke="#c26e3c" stroke-width="5.2" stroke-linejoin="round" stroke-linecap="round"/>
+    </Rule>
+    <Rule>
+      <Filter>[highway]='primary' or [highway]='primary_link'</Filter>
+      <LineSymbolizer stroke="#cf9f57" stroke-width="4.4" stroke-linejoin="round" stroke-linecap="round"/>
+    </Rule>
+    <Rule>
+      <Filter>[highway]='secondary' or [highway]='secondary_link'</Filter>
+      <LineSymbolizer stroke="#b3ad55" stroke-width="3.6" stroke-linejoin="round" stroke-linecap="round"/>
+    </Rule>
+    <Rule>
+      <Filter>[highway]='tertiary' or [highway]='tertiary_link'</Filter>
+      <LineSymbolizer stroke="#b7b7b7" stroke-width="3.0" stroke-linejoin="round" stroke-linecap="round"/>
+    </Rule>
+    <Rule>
+      <Filter>[highway]='residential' or [highway]='unclassified' or [highway]='living_street'</Filter>
+      <LineSymbolizer stroke="#cbc9c5" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>
+    </Rule>
+    <Rule>
+      <Filter>[highway]='service'</Filter>
+      <LineSymbolizer stroke="#d6d4d0" stroke-width="1.4" stroke-linejoin="round"/>
+    </Rule>
+  </Style>
+
+  <!-- ================= FILLS (over casings) ================= -->
+  <Style name="streets-fill">
+    <Rule>
+      <Filter>[highway]='motorway' or [highway]='trunk' or [highway]='motorway_link' or [highway]='trunk_link'</Filter>
+      <LineSymbolizer stroke="#f79e6e" stroke-width="3.4" stroke-linejoin="round" stroke-linecap="round"/>
+    </Rule>
+    <Rule>
+      <Filter>[highway]='primary' or [highway]='primary_link'</Filter>
+      <LineSymbolizer stroke="#fcd6a4" stroke-width="2.8" stroke-linejoin="round" stroke-linecap="round"/>
+    </Rule>
+    <Rule>
+      <Filter>[highway]='secondary' or [highway]='secondary_link'</Filter>
+      <LineSymbolizer stroke="#f6fabb" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>
+    </Rule>
+    <Rule>
+      <Filter>[highway]='tertiary' or [highway]='tertiary_link'</Filter>
+      <LineSymbolizer stroke="#ffffff" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/>
+    </Rule>
+    <Rule>
+      <Filter>[highway]='residential' or [highway]='unclassified' or [highway]='living_street'</Filter>
+      <LineSymbolizer stroke="#ffffff" stroke-width="1.4" stroke-linejoin="round" stroke-linecap="round"/>
+    </Rule>
+    <Rule>
+      <Filter>[highway]='service'</Filter>
+      <LineSymbolizer stroke="#ffffff" stroke-width="0.9"/>
+    </Rule>
+    <!-- Paths: no casing, dashed. -->
+    <Rule>
+      <Filter>[highway]='footway' or [highway]='path' or [highway]='pedestrian' or [highway]='steps' or [highway]='corridor'</Filter>
+      <LineSymbolizer stroke="#f19a94" stroke-width="0.9" stroke-dasharray="2,2" stroke-linecap="round"/>
+    </Rule>
+    <Rule>
+      <Filter>[highway]='cycleway'</Filter>
+      <LineSymbolizer stroke="#6f88c9" stroke-width="0.8" stroke-dasharray="1,2"/>
+    </Rule>
+  </Style>
+
+  <!-- ================= BRIDGES (overlay on top) ================= -->
+  <Style name="streets-bridge">
+    <Rule>
+      <Filter>[bridge] != '' and ([highway]='motorway' or [highway]='trunk')</Filter>
+      <LineSymbolizer stroke="#2b2b2b" stroke-width="5.6" stroke-linecap="butt"/>
+      <LineSymbolizer stroke="#f79e6e" stroke-width="3.4" stroke-linecap="round"/>
+    </Rule>
+    <Rule>
+      <Filter>[bridge] != '' and ([highway]='primary' or [highway]='primary_link')</Filter>
+      <LineSymbolizer stroke="#2b2b2b" stroke-width="4.8" stroke-linecap="butt"/>
+      <LineSymbolizer stroke="#fcd6a4" stroke-width="2.8" stroke-linecap="round"/>
+    </Rule>
+    <Rule>
+      <Filter>[bridge] != '' and ([highway]='secondary' or [highway]='tertiary')</Filter>
+      <LineSymbolizer stroke="#2b2b2b" stroke-width="3.8" stroke-linecap="butt"/>
+      <LineSymbolizer stroke="#f6fabb" stroke-width="2.2" stroke-linecap="round"/>
+    </Rule>
+  </Style>
+
+  <!-- ================= ONEWAY ARROWS ================= -->
+  <Style name="streets-oneway">
+    <Rule>
+      <Filter>[oneway]='yes' and ([highway]='primary' or [highway]='secondary' or [highway]='tertiary' or [highway]='residential' or [highway]='trunk' or [highway]='motorway')</Filter>
+      <MarkersSymbolizer marker-type="arrow" fill="#8a8580" placement="line" spacing="140"
+                         width="7" height="3" allow-overlap="false" ignore-placement="false"/>
+    </Rule>
+  </Style>
+
+  <!-- ================= STREET NAME LABELS ================= -->
+  <Style name="streets-labels">
+    <Rule>
+      <Filter>[name] != '' and ([highway]='motorway' or [highway]='trunk' or [highway]='primary')</Filter>
+      <TextSymbolizer face-name="DejaVu Sans Book" size="12" fill="#3a3227"
+                      halo-fill="#ffffff" halo-radius="1.5" placement="line"
+                      spacing="260" minimum-distance="40">[name]</TextSymbolizer>
+    </Rule>
+    <Rule>
+      <Filter>[name] != '' and ([highway]='secondary' or [highway]='tertiary' or [highway]='residential' or [highway]='living_street' or [highway]='unclassified' or [highway]='pedestrian')</Filter>
+      <TextSymbolizer face-name="DejaVu Sans Book" size="10" fill="#4a4238"
+                      halo-fill="#ffffff" halo-radius="1.4" placement="line"
+                      spacing="220" minimum-distance="34">[name]</TextSymbolizer>
+    </Rule>
+  </Style>
+
+  <Layer name="streets" srs="+proj=longlat +datum=WGS84 +no_defs">
+    <StyleName>streets-casing</StyleName>
+    <StyleName>streets-fill</StyleName>
+    <StyleName>streets-bridge</StyleName>
+    <StyleName>streets-oneway</StyleName>
+    <StyleName>streets-labels</StyleName>
+    <Datasource>
+      <Parameter name="type">osmflat</Parameter>
+      <Parameter name="file">@ARCHIVE@</Parameter>
+      <Parameter name="osm_type">way</Parameter>
+    </Datasource>
+  </Layer>
+
+</Map>

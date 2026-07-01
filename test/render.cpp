@@ -9,6 +9,7 @@
 
 #include <mapnik/mapnik.hpp>
 #include <mapnik/map.hpp>
+#include <mapnik/font_engine_freetype.hpp>
 #include <mapnik/datasource_cache.hpp>
 #include <mapnik/load_map.hpp>
 #include <mapnik/image.hpp>
@@ -49,6 +50,12 @@ int main(int argc, char** argv)
     try {
         mapnik::setup();
         mapnik::datasource_cache::instance().register_datasources(plugin_dir);
+        // Register bundled DejaVu fonts so TextSymbolizer can resolve face-name.
+        if (const char* fd = std::getenv("MAPNIK_FONT_DIR")) {
+            mapnik::freetype_engine::register_fonts(fd, true);
+        } else {
+            mapnik::freetype_engine::register_fonts("/opt/homebrew/lib/mapnik/fonts", true);
+        }
 
         std::string xml = slurp(style_xml);
         for (std::string::size_type p; (p = xml.find("@ARCHIVE@")) != std::string::npos;) {
