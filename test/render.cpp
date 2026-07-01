@@ -66,6 +66,7 @@ int main(int argc, char** argv)
         mapnik::load_map_string(m, xml);
 
         m.zoom_to_box(mapnik::box2d<double>(minx, miny, maxx, maxy));
+        std::cerr << "scale_denominator=" << m.scale_denominator() << "\n";
 
         mapnik::image_rgba8 im(m.width(), m.height());
         mapnik::agg_renderer<mapnik::image_rgba8> ren(m, im);

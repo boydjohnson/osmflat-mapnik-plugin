@@ -1,81 +1,274 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- A fuller demo style exercising the osmflat plugin:
-       - query-time selection via osm_type (way vs node layers)
-       - render-time selection via <Filter> on tags
-       - polygon fills on closed ways, line strokes on ways, markers on nodes
-     Absent tags are null-filled, so [key] != '' means "has this key". -->
-<Map background-color="#f4f2ee" srs="+proj=longlat +datum=WGS84 +no_defs">
+<!-- Full multi-scale basemap for the osmflat plugin. Layer stack (bottom->top):
+       1. landcover  (way,relation)  water / wood / park / landuse fills
+       2. buildings  (way,relation)  building fills
+       3. streets    (way)           casing + fill ramp, bridges, oneway arrows
+       4. area-labels(way,relation)  park/water names, interior placement
+       5. street-lbl (way)           street names, line placement
+       6. pois       (node)          amenity markers + names
+       7. places     (node)          city/town/village labels (top)
+     Fills work on both closed ways (PolygonSymbolizer auto-closes a closed
+     line_string) and multipolygon relations.
 
-  <!-- ============ AREAS: closed ways filled by tag ============ -->
-  <Style name="areas">
+     Scale gating: this Map's SRS is geographic (longlat), so mapnik's
+     scale_denominator is in DEGREE-based units (deg-per-px / 0.00028), NOT the
+     Web-Mercator z-level numbers. Reference values (render.cpp, 1000px wide):
+       ~107   country (~30 deg)      ~1.25  city (~0.35 deg)
+       ~18    state   (~5 deg)       ~0.21  metro (~0.06 deg)
+       ~6     region  (~1.7 deg)     ~0.036 neighborhood (~0.01 deg)
+     MaxScaleDenominator caps drop fine detail as you zoom OUT; the coarse
+     skeleton (motorway/trunk roads, big water/forest, city/town labels) has no
+     cap and carries the state/country view. A Web-Mercator map would use
+     standard z-level denominators instead. -->
+<Map background-color="#f2efe9" srs="+proj=longlat +datum=WGS84 +no_defs">
+
+  <!-- ================= 1. LANDCOVER ================= -->
+  <Style name="landcover">
+    <!-- water + forest carry to the widest zooms (no cap). -->
     <Rule>
-      <Filter>[natural] = 'water' or [waterway] != ''</Filter>
+      <Filter>[natural]='water' or [waterway]!='' or [landuse]='reservoir' or [natural]='wetland'</Filter>
       <PolygonSymbolizer fill="#a5c9e8"/>
+      <LineSymbolizer stroke="#8fb2d4" stroke-width="0.4"/>
     </Rule>
     <Rule>
-      <Filter>[leisure] = 'park' or [leisure] = 'garden'</Filter>
-      <PolygonSymbolizer fill="#c9e2b3"/>
+      <Filter>[natural]='wood' or [landuse]='forest'</Filter>
+      <PolygonSymbolizer fill="#addba0"/>
     </Rule>
     <Rule>
-      <Filter>[natural] = 'wood' or [landuse] = 'forest'</Filter>
-      <PolygonSymbolizer fill="#add098"/>
+      <MaxScaleDenominator>12</MaxScaleDenominator>
+      <Filter>[leisure]='park' or [leisure]='garden' or [leisure]='pitch' or [landuse]='grass' or [landuse]='recreation_ground'</Filter>
+      <PolygonSymbolizer fill="#c8e6b0"/>
     </Rule>
     <Rule>
-      <Filter>[landuse] != '' and not ([landuse] = 'forest')</Filter>
-      <PolygonSymbolizer fill="#eae5da"/>
+      <MaxScaleDenominator>3</MaxScaleDenominator>
+      <Filter>[landuse]='cemetery'</Filter>
+      <PolygonSymbolizer fill="#aacbaf"/>
+    </Rule>
+    <Rule>
+      <MaxScaleDenominator>3</MaxScaleDenominator>
+      <Filter>[landuse]='industrial' or [landuse]='commercial' or [landuse]='retail'</Filter>
+      <PolygonSymbolizer fill="#ece2e3"/>
+    </Rule>
+    <Rule>
+      <MaxScaleDenominator>3</MaxScaleDenominator>
+      <Filter>[landuse]!='' and not ([landuse]='forest' or [landuse]='grass' or [landuse]='cemetery' or [landuse]='reservoir' or [landuse]='industrial' or [landuse]='commercial' or [landuse]='retail' or [landuse]='recreation_ground')</Filter>
+      <PolygonSymbolizer fill="#e8e6e0"/>
     </Rule>
   </Style>
 
-  <!-- ============ BUILDINGS ============ -->
+  <!-- ================= 2. BUILDINGS (city zoom and closer) ============= -->
   <Style name="buildings">
     <Rule>
-      <Filter>[building] != ''</Filter>
+      <MaxScaleDenominator>1.5</MaxScaleDenominator>
+      <Filter>[building]!=''</Filter>
       <PolygonSymbolizer fill="#d9cec3"/>
-      <LineSymbolizer stroke="#c2b4a5" stroke-width="0.3"/>
+      <LineSymbolizer stroke="#c2b3a3" stroke-width="0.3"/>
     </Rule>
   </Style>
 
-  <!-- ============ ROADS: strokes by highway class ============ -->
-  <Style name="roads">
+  <!-- ================= 3a. ROAD CASINGS ================= -->
+  <Style name="streets-casing">
     <Rule>
-      <Filter>[highway] = 'motorway' or [highway] = 'trunk'</Filter>
-      <LineSymbolizer stroke="#e79080" stroke-width="3.0" stroke-linejoin="round" stroke-linecap="round"/>
+      <Filter>[highway]='motorway' or [highway]='trunk' or [highway]='motorway_link' or [highway]='trunk_link'</Filter>
+      <LineSymbolizer stroke="#c26e3c" stroke-width="5.2" stroke-linejoin="round" stroke-linecap="round"/>
     </Rule>
     <Rule>
-      <Filter>[highway] = 'primary'</Filter>
-      <LineSymbolizer stroke="#f0b070" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round"/>
+      <MaxScaleDenominator>40</MaxScaleDenominator>
+      <Filter>[highway]='primary' or [highway]='primary_link'</Filter>
+      <LineSymbolizer stroke="#cf9f57" stroke-width="4.4" stroke-linejoin="round" stroke-linecap="round"/>
     </Rule>
     <Rule>
-      <Filter>[highway] = 'secondary' or [highway] = 'tertiary'</Filter>
-      <LineSymbolizer stroke="#f7e08a" stroke-width="1.6" stroke-linejoin="round"/>
+      <MaxScaleDenominator>12</MaxScaleDenominator>
+      <Filter>[highway]='secondary' or [highway]='secondary_link'</Filter>
+      <LineSymbolizer stroke="#b3ad55" stroke-width="3.6" stroke-linejoin="round" stroke-linecap="round"/>
     </Rule>
     <Rule>
-      <Filter>[highway] = 'residential' or [highway] = 'unclassified' or [highway] = 'service' or [highway] = 'living_street'</Filter>
-      <LineSymbolizer stroke="#ffffff" stroke-width="1.0"/>
+      <MaxScaleDenominator>6</MaxScaleDenominator>
+      <Filter>[highway]='tertiary' or [highway]='tertiary_link'</Filter>
+      <LineSymbolizer stroke="#b7b7b7" stroke-width="3.0" stroke-linejoin="round" stroke-linecap="round"/>
+    </Rule>
+    <Rule>
+      <MaxScaleDenominator>2.5</MaxScaleDenominator>
+      <Filter>[highway]='residential' or [highway]='unclassified' or [highway]='living_street'</Filter>
+      <LineSymbolizer stroke="#cbc9c5" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>
+    </Rule>
+    <Rule>
+      <MaxScaleDenominator>0.15</MaxScaleDenominator>
+      <Filter>[highway]='service'</Filter>
+      <LineSymbolizer stroke="#d6d4d0" stroke-width="1.4" stroke-linejoin="round"/>
     </Rule>
   </Style>
 
-  <!-- ============ POINTS: amenity nodes as markers ============ -->
+  <!-- ================= 3b. ROAD FILLS ================= -->
+  <Style name="streets-fill">
+    <Rule>
+      <Filter>[highway]='motorway' or [highway]='trunk' or [highway]='motorway_link' or [highway]='trunk_link'</Filter>
+      <LineSymbolizer stroke="#f79e6e" stroke-width="3.4" stroke-linejoin="round" stroke-linecap="round"/>
+    </Rule>
+    <Rule>
+      <MaxScaleDenominator>40</MaxScaleDenominator>
+      <Filter>[highway]='primary' or [highway]='primary_link'</Filter>
+      <LineSymbolizer stroke="#fcd6a4" stroke-width="2.8" stroke-linejoin="round" stroke-linecap="round"/>
+    </Rule>
+    <Rule>
+      <MaxScaleDenominator>12</MaxScaleDenominator>
+      <Filter>[highway]='secondary' or [highway]='secondary_link'</Filter>
+      <LineSymbolizer stroke="#f6fabb" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>
+    </Rule>
+    <Rule>
+      <MaxScaleDenominator>6</MaxScaleDenominator>
+      <Filter>[highway]='tertiary' or [highway]='tertiary_link'</Filter>
+      <LineSymbolizer stroke="#ffffff" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/>
+    </Rule>
+    <Rule>
+      <MaxScaleDenominator>2.5</MaxScaleDenominator>
+      <Filter>[highway]='residential' or [highway]='unclassified' or [highway]='living_street'</Filter>
+      <LineSymbolizer stroke="#ffffff" stroke-width="1.4" stroke-linejoin="round" stroke-linecap="round"/>
+    </Rule>
+    <Rule>
+      <MaxScaleDenominator>0.15</MaxScaleDenominator>
+      <Filter>[highway]='service'</Filter>
+      <LineSymbolizer stroke="#ffffff" stroke-width="0.9"/>
+    </Rule>
+    <Rule>
+      <MaxScaleDenominator>0.1</MaxScaleDenominator>
+      <Filter>[highway]='footway' or [highway]='path' or [highway]='pedestrian' or [highway]='steps' or [highway]='corridor'</Filter>
+      <LineSymbolizer stroke="#f19a94" stroke-width="0.9" stroke-dasharray="2,2" stroke-linecap="round"/>
+    </Rule>
+    <Rule>
+      <MaxScaleDenominator>0.1</MaxScaleDenominator>
+      <Filter>[highway]='cycleway'</Filter>
+      <LineSymbolizer stroke="#6f88c9" stroke-width="0.8" stroke-dasharray="1,2"/>
+    </Rule>
+  </Style>
+
+  <!-- ================= 3c. BRIDGES (overlay, city zoom) ============= -->
+  <Style name="streets-bridge">
+    <Rule>
+      <MaxScaleDenominator>2.5</MaxScaleDenominator>
+      <Filter>[bridge]!='' and ([highway]='motorway' or [highway]='trunk')</Filter>
+      <LineSymbolizer stroke="#2b2b2b" stroke-width="5.6" stroke-linecap="butt"/>
+      <LineSymbolizer stroke="#f79e6e" stroke-width="3.4" stroke-linecap="round"/>
+    </Rule>
+    <Rule>
+      <MaxScaleDenominator>2.5</MaxScaleDenominator>
+      <Filter>[bridge]!='' and ([highway]='primary' or [highway]='primary_link')</Filter>
+      <LineSymbolizer stroke="#2b2b2b" stroke-width="4.8" stroke-linecap="butt"/>
+      <LineSymbolizer stroke="#fcd6a4" stroke-width="2.8" stroke-linecap="round"/>
+    </Rule>
+    <Rule>
+      <MaxScaleDenominator>2.5</MaxScaleDenominator>
+      <Filter>[bridge]!='' and ([highway]='secondary' or [highway]='tertiary')</Filter>
+      <LineSymbolizer stroke="#2b2b2b" stroke-width="3.8" stroke-linecap="butt"/>
+      <LineSymbolizer stroke="#f6fabb" stroke-width="2.2" stroke-linecap="round"/>
+    </Rule>
+  </Style>
+
+  <!-- ================= 3d. ONEWAY ARROWS (metro zoom) ============= -->
+  <Style name="streets-oneway">
+    <Rule>
+      <MaxScaleDenominator>0.5</MaxScaleDenominator>
+      <Filter>[oneway]='yes' and ([highway]='primary' or [highway]='secondary' or [highway]='tertiary' or [highway]='residential' or [highway]='trunk' or [highway]='motorway')</Filter>
+      <MarkersSymbolizer marker-type="arrow" fill="#8a8580" placement="line" spacing="140"
+                         width="7" height="3" allow-overlap="false"/>
+    </Rule>
+  </Style>
+
+  <!-- ================= 4. AREA LABELS ================= -->
+  <Style name="area-labels">
+    <Rule>
+      <MaxScaleDenominator>12</MaxScaleDenominator>
+      <Filter>[name]!='' and ([leisure]='park' or [natural]='wood' or [landuse]='forest' or [natural]='water' or [leisure]='garden')</Filter>
+      <TextSymbolizer face-name="DejaVu Sans Oblique" size="10" fill="#5a6b4a"
+                      halo-fill="#ffffffcc" halo-radius="1.2" placement="interior"
+                      wrap-width="60" minimum-distance="30">[name]</TextSymbolizer>
+    </Rule>
+  </Style>
+
+  <!-- ================= 5. STREET LABELS (city zoom and closer) ======= -->
+  <Style name="street-labels">
+    <Rule>
+      <MaxScaleDenominator>2.5</MaxScaleDenominator>
+      <Filter>[name]!='' and ([highway]='motorway' or [highway]='trunk' or [highway]='primary')</Filter>
+      <TextSymbolizer face-name="DejaVu Sans Book" size="11" fill="#3a3227"
+                      halo-fill="#ffffff" halo-radius="1.5" placement="line"
+                      spacing="260" minimum-distance="40">[name]</TextSymbolizer>
+    </Rule>
+    <Rule>
+      <MaxScaleDenominator>0.1</MaxScaleDenominator>
+      <Filter>[name]!='' and ([highway]='secondary' or [highway]='tertiary' or [highway]='residential' or [highway]='living_street' or [highway]='unclassified' or [highway]='pedestrian')</Filter>
+      <TextSymbolizer face-name="DejaVu Sans Book" size="9" fill="#4a4238"
+                      halo-fill="#ffffff" halo-radius="1.4" placement="line"
+                      spacing="220" minimum-distance="34">[name]</TextSymbolizer>
+    </Rule>
+  </Style>
+
+  <!-- ================= 6. POIS (neighborhood zoom) ============= -->
   <Style name="pois">
     <Rule>
-      <Filter>[amenity] != ''</Filter>
-      <MarkersSymbolizer marker-type="ellipse" fill="#d0605a" stroke="#7c2f2b" stroke-width="0.5" width="4" height="4" allow-overlap="true"/>
+      <MaxScaleDenominator>0.1</MaxScaleDenominator>
+      <Filter>[name]!='' and ([amenity]!='' or [shop]!='')</Filter>
+      <MarkersSymbolizer marker-type="ellipse" fill="#d0605a" stroke="#7c2f2b" stroke-width="0.6" width="5" height="5" allow-overlap="true" ignore-placement="true"/>
+      <TextSymbolizer face-name="DejaVu Sans Book" size="9" fill="#6b2f2b"
+                      halo-fill="#ffffff" halo-radius="1.3" dy="-8"
+                      wrap-width="70" minimum-distance="4">[name]</TextSymbolizer>
     </Rule>
   </Style>
 
-  <!-- Layers render bottom-to-top in document order. -->
-  <Layer name="areas" srs="+proj=longlat +datum=WGS84 +no_defs">
-    <StyleName>areas</StyleName>
+  <!-- ================= 7. PLACES (city -> neighbourhood, top) ======== -->
+  <!-- City names carry the widest zooms (no cap); smaller places phase in. -->
+  <Style name="places">
+    <Rule>
+      <Filter>[name]!='' and [place]='city'</Filter>
+      <MarkersSymbolizer marker-type="ellipse" fill="#33322e" width="4" height="4" allow-overlap="true" ignore-placement="true"/>
+      <TextSymbolizer face-name="DejaVu Sans Bold" size="13" fill="#33322e"
+                      halo-fill="#ffffffdd" halo-radius="2" dy="-10" wrap-width="90">[name]</TextSymbolizer>
+    </Rule>
+    <Rule>
+      <MaxScaleDenominator>40</MaxScaleDenominator>
+      <Filter>[name]!='' and [place]='town'</Filter>
+      <MarkersSymbolizer marker-type="ellipse" fill="#5a5850" width="3" height="3" allow-overlap="true" ignore-placement="true"/>
+      <TextSymbolizer face-name="DejaVu Sans Book" size="11" fill="#45433c"
+                      halo-fill="#ffffffdd" halo-radius="1.6" dy="-8" wrap-width="80">[name]</TextSymbolizer>
+    </Rule>
+    <Rule>
+      <MaxScaleDenominator>3</MaxScaleDenominator>
+      <Filter>[name]!='' and ([place]='village' or [place]='suburb')</Filter>
+      <TextSymbolizer face-name="DejaVu Sans Book" size="9" fill="#55534c"
+                      halo-fill="#ffffffcc" halo-radius="1.3" wrap-width="70">[name]</TextSymbolizer>
+    </Rule>
+    <Rule>
+      <MaxScaleDenominator>0.3</MaxScaleDenominator>
+      <Filter>[name]!='' and ([place]='neighbourhood' or [place]='quarter' or [place]='hamlet')</Filter>
+      <TextSymbolizer face-name="DejaVu Sans Oblique" size="8" fill="#6a685f"
+                      halo-fill="#ffffffcc" halo-radius="1.2" wrap-width="60">[name]</TextSymbolizer>
+    </Rule>
+  </Style>
+
+  <!-- ============================ LAYERS ============================ -->
+  <Layer name="landcover" srs="+proj=longlat +datum=WGS84 +no_defs">
+    <StyleName>landcover</StyleName>
+    <Datasource>
+      <Parameter name="type">osmflat</Parameter>
+      <Parameter name="file">@ARCHIVE@</Parameter>
+      <Parameter name="osm_type">way,relation</Parameter>
+    </Datasource>
+  </Layer>
+
+  <Layer name="buildings" srs="+proj=longlat +datum=WGS84 +no_defs">
     <StyleName>buildings</StyleName>
     <Datasource>
       <Parameter name="type">osmflat</Parameter>
       <Parameter name="file">@ARCHIVE@</Parameter>
-      <Parameter name="osm_type">way</Parameter>
+      <Parameter name="osm_type">way,relation</Parameter>
     </Datasource>
   </Layer>
 
-  <Layer name="roads" srs="+proj=longlat +datum=WGS84 +no_defs">
-    <StyleName>roads</StyleName>
+  <Layer name="streets" srs="+proj=longlat +datum=WGS84 +no_defs">
+    <StyleName>streets-casing</StyleName>
+    <StyleName>streets-fill</StyleName>
+    <StyleName>streets-bridge</StyleName>
+    <StyleName>streets-oneway</StyleName>
     <Datasource>
       <Parameter name="type">osmflat</Parameter>
       <Parameter name="file">@ARCHIVE@</Parameter>
@@ -83,8 +276,35 @@
     </Datasource>
   </Layer>
 
-  <Layer name="points" srs="+proj=longlat +datum=WGS84 +no_defs">
+  <Layer name="area-labels" srs="+proj=longlat +datum=WGS84 +no_defs">
+    <StyleName>area-labels</StyleName>
+    <Datasource>
+      <Parameter name="type">osmflat</Parameter>
+      <Parameter name="file">@ARCHIVE@</Parameter>
+      <Parameter name="osm_type">way,relation</Parameter>
+    </Datasource>
+  </Layer>
+
+  <Layer name="street-labels" srs="+proj=longlat +datum=WGS84 +no_defs">
+    <StyleName>street-labels</StyleName>
+    <Datasource>
+      <Parameter name="type">osmflat</Parameter>
+      <Parameter name="file">@ARCHIVE@</Parameter>
+      <Parameter name="osm_type">way</Parameter>
+    </Datasource>
+  </Layer>
+
+  <Layer name="pois" srs="+proj=longlat +datum=WGS84 +no_defs">
     <StyleName>pois</StyleName>
+    <Datasource>
+      <Parameter name="type">osmflat</Parameter>
+      <Parameter name="file">@ARCHIVE@</Parameter>
+      <Parameter name="osm_type">node</Parameter>
+    </Datasource>
+  </Layer>
+
+  <Layer name="places" srs="+proj=longlat +datum=WGS84 +no_defs">
+    <StyleName>places</StyleName>
     <Datasource>
       <Parameter name="type">osmflat</Parameter>
       <Parameter name="file">@ARCHIVE@</Parameter>

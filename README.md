@@ -78,7 +78,7 @@ Example styles under `test/` (each uses `@ARCHIVE@` as the archive placeholder):
 | style | shows |
 |-------|-------|
 | `style.xml`         | base ways + red `[highway]='primary'` filter |
-| `style-full.xml`    | area fills, buildings, road hierarchy, POI markers |
+| `style-full.xml`    | full multi-scale basemap: landcover+relation fills, buildings, road ramp w/ bridges+arrows, area/street/POI labels, city/town place labels, `MaxScaleDenominator` gating from neighborhood to state/country |
 | `style-labels.xml`  | line-placement street labels + POI labels (needs fonts) |
 | `style-streets.xml` | urban street ramp: casing/fill tiers, oneway arrows, bridges, labels |
 | `style-relations.xml` | `type=multipolygon`/`boundary` relations as filled polygons with holes |
@@ -87,3 +87,14 @@ The `style-streets.xml` tiers were chosen from real archive counts via
 `osmflat-taginfo` (see the project memory). Text styles need fonts registered —
 the harness registers Homebrew's bundled DejaVu, overridable with
 `MAPNIK_FONT_DIR`.
+
+### Performance at wide zoom
+
+The datasource answers a bbox query by returning **all** primitives in the box;
+it can't push a tag filter (e.g. `highway=motorway`) down into the query — mapnik
+applies `<Filter>`/`<MaxScaleDenominator>` at render time, *after* the features
+are materialized. So a state/country-sized view still walks every way/node in the
+box even though most are gated out, making wide zooms slow (≈18 s for a ~1.7°
+region). It renders correctly; it just isn't fast. The real fix is a datasource
+push-down (a highway-class / tag prefilter, or a pre-generalized overview archive)
+— noted as future work.
