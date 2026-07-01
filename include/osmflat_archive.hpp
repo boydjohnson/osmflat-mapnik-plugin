@@ -71,8 +71,10 @@ private:
 /// RAII owner of an opened osmflat archive (the opaque `OsmflatArchive*`).
 class archive {
 public:
-    explicit archive(const std::string& path) {
-        handle_ = osmflat_archive_open(path.c_str());
+    /// Opens the parent archive, plus an optional Ext sidecar (`ext_path`, empty
+    /// to skip) that enables tag-filter push-down.
+    explicit archive(const std::string& path, const std::string& ext_path = "") {
+        handle_ = osmflat_archive_open(path.c_str(), ext_path.empty() ? nullptr : ext_path.c_str());
         if (!handle_) {
             throw std::runtime_error("osmflat: failed to open archive at '" + path + "'");
         }
@@ -91,14 +93,17 @@ public:
         return e;
     }
 
-    /// Bounding-box query. `keys` are the tag names to materialize (borrowed;
-    /// their bytes must outlive the call). Returns an owning `feature_set`.
+    /// Bounding-box query. `keys` are the tag names to materialize; `filters` is
+    /// the optional tag prefilter (`key=value` / `key=*`) pushed into the query
+    /// via the Ext inverted index. Both are borrowed and must outlive the call.
     feature_set query(double min_x, double min_y, double max_x, double max_y,
                       bool include_nodes, bool include_ways, bool include_relations,
-                      const std::vector<OsmflatStrRef>& keys) const {
+                      const std::vector<OsmflatStrRef>& keys,
+                      const std::vector<OsmflatKvRef>& filters) const {
         return feature_set(osmflat_query(handle_, min_x, min_y, max_x, max_y,
                                          include_nodes, include_ways, include_relations,
-                                         keys.data(), keys.size()));
+                                         keys.data(), keys.size(),
+                                         filters.data(), filters.size()));
     }
 
 private:

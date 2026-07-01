@@ -23,6 +23,9 @@ use osmflat::{
     find_nodes_by_bounding_box, find_relations_by_bounding_box, find_tag, find_ways_by_bounding_box,
     node_id, relation_id, way_id, FileResourceStorage, Node, Osm, Relation, RelationMembersRef, Way,
 };
+use osmflat_ext::query::Bbox;
+use osmflat_ext::taginfo::TaginfoQuery;
+use osmflat_ext::{Ext, ExtArchive};
 
 /// Geometry kind of a materialized feature.
 #[repr(u32)]
@@ -50,6 +53,23 @@ pub struct OsmflatStrRef {
     pub len: usize,
 }
 
+/// A borrowed tag prefilter term handed *in* from C++: `key=value`, or `key=*`
+/// (any value) when `val` is empty. Used to push tag-filtering into the query
+/// via the Ext inverted index.
+#[repr(C)]
+pub struct OsmflatKvRef {
+    pub key: OsmflatStrRef,
+    pub val: OsmflatStrRef,
+}
+
+unsafe fn str_ref<'a>(s: &OsmflatStrRef) -> Option<&'a [u8]> {
+    if s.ptr.is_null() {
+        None
+    } else {
+        Some(std::slice::from_raw_parts(s.ptr, s.len))
+    }
+}
+
 /// A borrowed attribute value handed *out* to C++. `present == false` means the
 /// feature has no such tag (render as `value_null`); otherwise `ptr`/`len` are
 /// the UTF-8 value bytes, valid until the next `osmflat_featureset_next` / free.
@@ -60,10 +80,33 @@ pub struct OsmflatValue {
     pub len: usize,
 }
 
-/// Opaque archive handle. Owns the memory-mapped `Osm` archive.
+/// Opaque archive handle. Owns the memory-mapped `Osm` archive, and optionally
+/// its `Ext` sidecar (for tag-filter push-down via the inverted index).
 pub struct OsmflatArchive {
-    archive: Osm,
+    kind: ArchiveKind,
     coord_scale: f64,
+}
+
+enum ArchiveKind {
+    Plain(Osm),
+    Ext(ExtArchive),
+}
+
+impl OsmflatArchive {
+    fn osm(&self) -> &Osm {
+        match &self.kind {
+            ArchiveKind::Plain(o) => o,
+            ArchiveKind::Ext(e) => e.parent(),
+        }
+    }
+
+    /// Inverted-tag-index query, when an Ext sidecar with `--taginfo` is loaded.
+    fn taginfo(&self) -> Option<TaginfoQuery<'_>> {
+        match &self.kind {
+            ArchiveKind::Ext(e) => e.taginfo(),
+            ArchiveKind::Plain(_) => None,
+        }
+    }
 }
 
 struct OwnedFeature {
@@ -96,31 +139,52 @@ impl OsmflatFeatureSet {
     }
 }
 
-/// Opens an osmflat archive directory. Returns null on failure. Free with
-/// `osmflat_archive_free`.
+unsafe fn cstr<'a>(p: *const c_char) -> Option<&'a str> {
+    if p.is_null() {
+        None
+    } else {
+        CStr::from_ptr(p).to_str().ok()
+    }
+}
+
+/// Opens an osmflat archive directory, plus an optional Ext sidecar directory
+/// (`ext_path`, may be null) that enables tag-filter push-down. If the sidecar
+/// fails to open or its fingerprint doesn't match the parent, it is ignored and
+/// the archive opens plain. Returns null only if the parent can't be opened.
+/// Free with `osmflat_archive_free`.
 ///
 /// # Safety
-/// `path` must be a valid, NUL-terminated C string.
+/// `path` must be a valid, NUL-terminated C string; `ext_path` null or likewise.
 #[no_mangle]
-pub unsafe extern "C" fn osmflat_archive_open(path: *const c_char) -> *mut OsmflatArchive {
-    if path.is_null() {
+pub unsafe extern "C" fn osmflat_archive_open(
+    path: *const c_char,
+    ext_path: *const c_char,
+) -> *mut OsmflatArchive {
+    let Some(path) = cstr(path) else {
         return std::ptr::null_mut();
-    }
-    let path = match CStr::from_ptr(path).to_str() {
-        Ok(p) => p,
-        Err(_) => return std::ptr::null_mut(),
     };
-
-    let archive = match Osm::open(FileResourceStorage::new(path)) {
+    let osm = match Osm::open(FileResourceStorage::new(path)) {
         Ok(a) => a,
         Err(_) => return std::ptr::null_mut(),
     };
-    let coord_scale = archive.header().coord_scale() as f64;
+    let coord_scale = osm.header().coord_scale() as f64;
 
-    Box::into_raw(Box::new(OsmflatArchive {
-        archive,
-        coord_scale,
-    }))
+    let kind = match cstr(ext_path) {
+        Some(ext_path) => match Ext::open(FileResourceStorage::new(ext_path)) {
+            // ExtArchive::open consumes `osm` and verifies the fingerprint.
+            Ok(ext) => match ExtArchive::open(osm, ext) {
+                Ok(ext_archive) => ArchiveKind::Ext(ext_archive),
+                Err(_) => match Osm::open(FileResourceStorage::new(path)) {
+                    Ok(reopened) => ArchiveKind::Plain(reopened),
+                    Err(_) => return std::ptr::null_mut(),
+                },
+            },
+            Err(_) => ArchiveKind::Plain(osm),
+        },
+        None => ArchiveKind::Plain(osm),
+    };
+
+    Box::into_raw(Box::new(OsmflatArchive { kind, coord_scale }))
 }
 
 /// Frees an archive handle.
@@ -150,7 +214,7 @@ pub unsafe extern "C" fn osmflat_archive_envelope(
     let Some(archive) = archive.as_ref() else {
         return false;
     };
-    let header = archive.archive.header();
+    let header = archive.osm().header();
     let scale = archive.coord_scale;
     min_x.write(header.bbox_left() as f64 / scale);
     min_y.write(header.bbox_bottom() as f64 / scale);
@@ -193,11 +257,13 @@ pub unsafe extern "C" fn osmflat_query(
     include_relations: bool,
     keys: *const OsmflatStrRef,
     num_keys: usize,
+    filters: *const OsmflatKvRef,
+    num_filters: usize,
 ) -> *mut OsmflatFeatureSet {
     let Some(handle) = archive.as_ref() else {
         return std::ptr::null_mut();
     };
-    let archive = &handle.archive;
+    let archive = handle.osm();
     let scale = handle.coord_scale;
 
     let key_refs: Vec<&[u8]> = if num_keys == 0 {
@@ -215,91 +281,232 @@ pub unsafe extern "C" fn osmflat_query(
             .collect()
     };
 
+    // Parse the tag prefilter: each `(key, Some(value))` is `key=value`; a
+    // zero-length value means `key=*` (any value of the key).
+    let filter_refs: Vec<(&[u8], Option<&[u8]>)> = if num_filters == 0 {
+        Vec::new()
+    } else {
+        slice::from_raw_parts(filters, num_filters)
+            .iter()
+            .filter_map(|f| {
+                let key = str_ref(&f.key)?;
+                let val = str_ref(&f.val);
+                Some((key, val.filter(|v| !v.is_empty())))
+            })
+            .collect()
+    };
+
+    let bbox = Bbox {
+        min_lon: min_x,
+        min_lat: min_y,
+        max_lon: max_x,
+        max_lat: max_y,
+    };
+
     let mut features = Vec::new();
 
+    // For each primitive: if a prefilter is set and the sidecar is present, walk
+    // only the candidate indices from the inverted index ∩ bbox; otherwise scan
+    // the full spatial query.
     if include_nodes {
-        let node_base = archive.nodes().as_ptr();
-        for node in find_nodes_by_bounding_box(archive, min_x, min_y, max_x, max_y) {
-            let idx = (node as *const Node).offset_from(node_base) as usize;
-            let x = node.lon() as f64 / scale;
-            let y = node.lat() as f64 / scale;
-            features.push(OwnedFeature {
-                osm_id: node_id(archive, idx),
-                osm_type: OsmflatOsmType::Node,
-                geom_type: OsmflatGeomType::Point,
-                is_closed: false,
-                coords: vec![x, y],
-                polygons: Vec::new(),
-                attrs: collect_attrs(archive, node.tags(), &key_refs),
-            });
+        match candidate_indices(handle, &filter_refs, bbox, Prim::Node) {
+            Some(indices) => features.extend(
+                indices
+                    .into_iter()
+                    .map(|i| materialize_node(archive, i as usize, scale, &key_refs)),
+            ),
+            None => {
+                let base = archive.nodes().as_ptr();
+                for node in find_nodes_by_bounding_box(archive, min_x, min_y, max_x, max_y) {
+                    let idx = (node as *const Node).offset_from(base) as usize;
+                    features.push(materialize_node(archive, idx, scale, &key_refs));
+                }
+            }
         }
     }
 
     if include_ways {
-        let nodes = archive.nodes();
-        let nodes_index = archive.nodes_index();
-        let way_base = archive.ways().as_ptr();
-        for way in find_ways_by_bounding_box(archive, min_x, min_y, max_x, max_y) {
-            let refs = way.refs();
-            let (begin, end) = (refs.start as usize, refs.end as usize);
-
-            let mut coords = Vec::new();
-            for i in begin..end {
-                if let Some(node_idx) = nodes_index[i].value() {
-                    let node = &nodes[node_idx as usize];
-                    coords.push(node.lon() as f64 / scale);
-                    coords.push(node.lat() as f64 / scale);
+        match candidate_indices(handle, &filter_refs, bbox, Prim::Way) {
+            Some(indices) => features.extend(
+                indices
+                    .into_iter()
+                    .filter_map(|i| materialize_way(archive, i as usize, scale, &key_refs)),
+            ),
+            None => {
+                let base = archive.ways().as_ptr();
+                for way in find_ways_by_bounding_box(archive, min_x, min_y, max_x, max_y) {
+                    let idx = (way as *const Way).offset_from(base) as usize;
+                    if let Some(f) = materialize_way(archive, idx, scale, &key_refs) {
+                        features.push(f);
+                    }
                 }
             }
-            // A line string needs at least two vertices.
-            if coords.len() < 4 {
-                continue;
-            }
-
-            // Closedness is a geometric fact: the first and last node ref
-            // resolve to the same node.
-            let is_closed = end > begin
-                && nodes_index[begin].value().is_some()
-                && nodes_index[begin].value() == nodes_index[end - 1].value();
-
-            let idx = (way as *const Way).offset_from(way_base) as usize;
-            features.push(OwnedFeature {
-                osm_id: way_id(archive, idx),
-                osm_type: OsmflatOsmType::Way,
-                geom_type: OsmflatGeomType::LineString,
-                is_closed,
-                coords,
-                polygons: Vec::new(),
-                attrs: collect_attrs(archive, way.tags(), &key_refs),
-            });
         }
     }
 
     if include_relations {
-        let rel_base = archive.relations().as_ptr();
-        for relation in find_relations_by_bounding_box(archive, min_x, min_y, max_x, max_y) {
-            // Only area relations become geometry; routes etc. are skipped.
-            if !is_area_relation(archive, relation) {
-                continue;
+        match candidate_indices(handle, &filter_refs, bbox, Prim::Relation) {
+            Some(indices) => features.extend(
+                indices
+                    .into_iter()
+                    .filter_map(|i| materialize_relation(archive, i as usize, scale, &key_refs)),
+            ),
+            None => {
+                let base = archive.relations().as_ptr();
+                for relation in find_relations_by_bounding_box(archive, min_x, min_y, max_x, max_y) {
+                    let idx = (relation as *const Relation).offset_from(base) as usize;
+                    if let Some(f) = materialize_relation(archive, idx, scale, &key_refs) {
+                        features.push(f);
+                    }
+                }
             }
-            let idx = (relation as *const Relation).offset_from(rel_base) as usize;
-            let polygons = assemble_multipolygon(archive, idx, scale);
-            if polygons.is_empty() {
-                continue;
-            }
-            features.push(OwnedFeature {
-                osm_id: relation_id(archive, idx),
-                osm_type: OsmflatOsmType::Relation,
-                geom_type: OsmflatGeomType::MultiPolygon,
-                is_closed: true,
-                coords: Vec::new(),
-                polygons,
-                attrs: collect_attrs(archive, relation.tags(), &key_refs),
-            });
         }
     }
 
     Box::into_raw(Box::new(OsmflatFeatureSet { features, pos: 0 }))
+}
+
+/// Which primitive a candidate-index lookup targets.
+#[derive(Clone, Copy)]
+enum Prim {
+    Node,
+    Way,
+    Relation,
+}
+
+/// Candidate parent indices for `prim` matching *any* of the `filters` within
+/// `bbox`, using the Ext inverted index (`postings ∩ bbox` merge-join). Returns
+/// `None` — meaning "fall back to a full spatial scan" — when there is no
+/// prefilter or no sidecar loaded.
+fn candidate_indices(
+    handle: &OsmflatArchive,
+    filters: &[(&[u8], Option<&[u8]>)],
+    bbox: Bbox,
+    prim: Prim,
+) -> Option<Vec<u64>> {
+    use osmflat_ext::query::{
+        intersect_bbox, node_indices_in_bbox, relation_indices_in_bbox, to_index_ranges,
+        way_indices_in_bbox,
+    };
+
+    if filters.is_empty() {
+        return None;
+    }
+    let taginfo = handle.taginfo()?;
+    let archive = handle.osm();
+
+    // Run the bbox spatial scan ONCE and reuse its index ranges for every
+    // postings intersection — crucial for `key=*`, which fans out over all of a
+    // key's values (otherwise each value would re-scan the whole bbox).
+    let idx = match prim {
+        Prim::Node => node_indices_in_bbox(archive, bbox),
+        Prim::Way => way_indices_in_bbox(archive, bbox),
+        Prim::Relation => relation_indices_in_bbox(archive, bbox),
+    };
+    let ranges = to_index_ranges(&idx);
+
+    let mut all: Vec<u64> = Vec::new();
+    let mut add = |vv: &osmflat_ext::taginfo::ValueView| {
+        let postings = match prim {
+            Prim::Node => vv.nodes(),
+            Prim::Way => vv.ways(),
+            Prim::Relation => vv.relations(),
+        };
+        all.extend(intersect_bbox(postings, &ranges));
+    };
+
+    for (key, val) in filters {
+        match val {
+            Some(value) => {
+                if let Some(vv) = taginfo.kv(key, value) {
+                    add(&vv);
+                }
+            }
+            // key=* : union the bbox intersection over all of the key's values.
+            None => {
+                if let Some(kview) = taginfo.key(key) {
+                    for vv in kview.values() {
+                        add(&vv);
+                    }
+                }
+            }
+        }
+    }
+    all.sort_unstable();
+    all.dedup();
+    Some(all)
+}
+
+fn materialize_node(archive: &Osm, idx: usize, scale: f64, keys: &[&[u8]]) -> OwnedFeature {
+    let node = &archive.nodes()[idx];
+    OwnedFeature {
+        osm_id: node_id(archive, idx),
+        osm_type: OsmflatOsmType::Node,
+        geom_type: OsmflatGeomType::Point,
+        is_closed: false,
+        coords: vec![node.lon() as f64 / scale, node.lat() as f64 / scale],
+        polygons: Vec::new(),
+        attrs: collect_attrs(archive, node.tags(), keys),
+    }
+}
+
+fn materialize_way(archive: &Osm, idx: usize, scale: f64, keys: &[&[u8]]) -> Option<OwnedFeature> {
+    let way = &archive.ways()[idx];
+    let refs = way.refs();
+    let (begin, end) = (refs.start as usize, refs.end as usize);
+
+    let nodes = archive.nodes();
+    let nodes_index = archive.nodes_index();
+    let mut coords = Vec::new();
+    for i in begin..end {
+        if let Some(node_idx) = nodes_index[i].value() {
+            let node = &nodes[node_idx as usize];
+            coords.push(node.lon() as f64 / scale);
+            coords.push(node.lat() as f64 / scale);
+        }
+    }
+    // A line string needs at least two vertices.
+    if coords.len() < 4 {
+        return None;
+    }
+    let is_closed = end > begin
+        && nodes_index[begin].value().is_some()
+        && nodes_index[begin].value() == nodes_index[end - 1].value();
+
+    Some(OwnedFeature {
+        osm_id: way_id(archive, idx),
+        osm_type: OsmflatOsmType::Way,
+        geom_type: OsmflatGeomType::LineString,
+        is_closed,
+        coords,
+        polygons: Vec::new(),
+        attrs: collect_attrs(archive, way.tags(), keys),
+    })
+}
+
+fn materialize_relation(
+    archive: &Osm,
+    idx: usize,
+    scale: f64,
+    keys: &[&[u8]],
+) -> Option<OwnedFeature> {
+    let relation = &archive.relations()[idx];
+    if !is_area_relation(archive, relation) {
+        return None;
+    }
+    let polygons = assemble_multipolygon(archive, idx, scale);
+    if polygons.is_empty() {
+        return None;
+    }
+    Some(OwnedFeature {
+        osm_id: relation_id(archive, idx),
+        osm_type: OsmflatOsmType::Relation,
+        geom_type: OsmflatGeomType::MultiPolygon,
+        is_closed: true,
+        coords: Vec::new(),
+        polygons,
+        attrs: collect_attrs(archive, relation.tags(), keys),
+    })
 }
 
 /// True if the relation is an area type whose member ways enclose polygons.

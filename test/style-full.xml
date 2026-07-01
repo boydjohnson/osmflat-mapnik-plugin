@@ -251,6 +251,8 @@
     <Datasource>
       <Parameter name="type">osmflat</Parameter>
       <Parameter name="file">@ARCHIVE@</Parameter>
+      <Parameter name="ext">@EXT@</Parameter>
+      <Parameter name="tags">natural=*,waterway=*,landuse=*,leisure=*</Parameter>
       <Parameter name="osm_type">way,relation</Parameter>
     </Datasource>
   </Layer>
@@ -260,6 +262,8 @@
     <Datasource>
       <Parameter name="type">osmflat</Parameter>
       <Parameter name="file">@ARCHIVE@</Parameter>
+      <Parameter name="ext">@EXT@</Parameter>
+      <Parameter name="tags">building=*</Parameter>
       <Parameter name="osm_type">way,relation</Parameter>
     </Datasource>
   </Layer>
@@ -272,6 +276,8 @@
     <Datasource>
       <Parameter name="type">osmflat</Parameter>
       <Parameter name="file">@ARCHIVE@</Parameter>
+      <Parameter name="ext">@EXT@</Parameter>
+      <Parameter name="tags">highway=*</Parameter>
       <Parameter name="osm_type">way</Parameter>
     </Datasource>
   </Layer>
@@ -281,6 +287,8 @@
     <Datasource>
       <Parameter name="type">osmflat</Parameter>
       <Parameter name="file">@ARCHIVE@</Parameter>
+      <Parameter name="ext">@EXT@</Parameter>
+      <Parameter name="tags">leisure=*,natural=*,landuse=*</Parameter>
       <Parameter name="osm_type">way,relation</Parameter>
     </Datasource>
   </Layer>
@@ -290,6 +298,8 @@
     <Datasource>
       <Parameter name="type">osmflat</Parameter>
       <Parameter name="file">@ARCHIVE@</Parameter>
+      <Parameter name="ext">@EXT@</Parameter>
+      <Parameter name="tags">highway=*</Parameter>
       <Parameter name="osm_type">way</Parameter>
     </Datasource>
   </Layer>
@@ -299,6 +309,8 @@
     <Datasource>
       <Parameter name="type">osmflat</Parameter>
       <Parameter name="file">@ARCHIVE@</Parameter>
+      <Parameter name="ext">@EXT@</Parameter>
+      <Parameter name="tags">amenity=*,shop=*</Parameter>
       <Parameter name="osm_type">node</Parameter>
     </Datasource>
   </Layer>
@@ -308,6 +320,8 @@
     <Datasource>
       <Parameter name="type">osmflat</Parameter>
       <Parameter name="file">@ARCHIVE@</Parameter>
+      <Parameter name="ext">@EXT@</Parameter>
+      <Parameter name="tags">place=*</Parameter>
       <Parameter name="osm_type">node</Parameter>
     </Datasource>
   </Layer>

@@ -11,6 +11,8 @@
 
 #include <memory>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "osmflat_archive.hpp"
 
@@ -49,6 +51,10 @@ private:
     mapnik::layer_descriptor desc_;
     mapnik::box2d<double> extent_;
     query_kinds kinds_;
+
+    // Tag prefilter from the `tags` param: (key, value); empty value == key=*.
+    // Stored stably so the query can borrow the bytes.
+    std::vector<std::pair<std::string, std::string>> tag_filters_;
 
     std::shared_ptr<archive> archive_;
 };

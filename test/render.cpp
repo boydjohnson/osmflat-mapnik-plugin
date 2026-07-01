@@ -61,6 +61,17 @@ int main(int argc, char** argv)
         for (std::string::size_type p; (p = xml.find("@ARCHIVE@")) != std::string::npos;) {
             xml.replace(p, std::string("@ARCHIVE@").size(), archive_dir);
         }
+        // @EXT@ -> Ext sidecar dir: $OSMFLAT_EXT, else derive by swapping a
+        // trailing ".flat" for ".ext" (mexico.osm.flat -> mexico.osm.ext).
+        std::string ext_dir;
+        if (const char* e = std::getenv("OSMFLAT_EXT")) {
+            ext_dir = e;
+        } else if (archive_dir.size() >= 5 && archive_dir.substr(archive_dir.size() - 5) == ".flat") {
+            ext_dir = archive_dir.substr(0, archive_dir.size() - 5) + ".ext";
+        }
+        for (std::string::size_type p; (p = xml.find("@EXT@")) != std::string::npos;) {
+            xml.replace(p, std::string("@EXT@").size(), ext_dir);
+        }
 
         mapnik::Map m(1000, 1000);
         mapnik::load_map_string(m, xml);

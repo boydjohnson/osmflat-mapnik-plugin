@@ -44,6 +44,33 @@ static query_kinds parse_kinds(std::string const& spec)
     return k;
 }
 
+// Parses the comma-separated `tags` value into (key, value) prefilter terms.
+// "key=value" -> {key,value}; "key" or "key=*" -> {key, ""} (key=*, any value).
+static std::vector<std::pair<std::string, std::string>> parse_tag_filters(std::string const& spec)
+{
+    auto trim = [](std::string s) {
+        s.erase(0, s.find_first_not_of(" \t"));
+        auto e = s.find_last_not_of(" \t");
+        return e == std::string::npos ? std::string() : s.substr(0, e + 1);
+    };
+    std::vector<std::pair<std::string, std::string>> out;
+    std::size_t start = 0;
+    while (start <= spec.size()) {
+        std::size_t comma = spec.find(',', start);
+        std::string tok = trim(spec.substr(start, comma == std::string::npos ? std::string::npos : comma - start));
+        if (!tok.empty()) {
+            std::size_t eq = tok.find('=');
+            std::string key = trim(eq == std::string::npos ? tok : tok.substr(0, eq));
+            std::string val = (eq == std::string::npos) ? std::string() : trim(tok.substr(eq + 1));
+            if (val == "*") { val.clear(); }
+            if (!key.empty()) { out.emplace_back(std::move(key), std::move(val)); }
+        }
+        if (comma == std::string::npos) { break; }
+        start = comma + 1;
+    }
+    return out;
+}
+
 void osmflat_datasource::init(mapnik::parameters const& params)
 {
     std::optional<std::string> file = params.get<std::string>("file");
@@ -57,7 +84,16 @@ void osmflat_datasource::init(mapnik::parameters const& params)
         kinds_ = parse_kinds(*osm_type);
     }
 
-    archive_ = std::make_shared<archive>(*file);
+    // `tags`: comma-separated tag prefilter, e.g. "highway=motorway,building=*".
+    // Pushed into the query via the Ext inverted index (needs the `ext` param).
+    std::optional<std::string> tags = params.get<std::string>("tags");
+    if (tags) {
+        tag_filters_ = parse_tag_filters(*tags);
+    }
+
+    // `ext`: optional Ext sidecar directory enabling the tag push-down.
+    std::optional<std::string> ext = params.get<std::string>("ext");
+    archive_ = std::make_shared<archive>(*file, ext ? *ext : std::string());
 
     auto e = archive_->envelope();
     extent_ = mapnik::box2d<double>(e[0], e[1], e[2], e[3]);
@@ -127,16 +163,31 @@ static std::vector<OsmflatStrRef> key_refs(std::vector<std::string> const& keys)
     return refs;
 }
 
+// Borrowed views of the datasource's stable tag filters for the C API.
+static std::vector<OsmflatKvRef> filter_refs(
+    std::vector<std::pair<std::string, std::string>> const& filters)
+{
+    std::vector<OsmflatKvRef> refs;
+    refs.reserve(filters.size());
+    for (auto const& kv : filters) {
+        refs.push_back(OsmflatKvRef{
+            OsmflatStrRef{reinterpret_cast<const uint8_t*>(kv.first.data()), kv.first.size()},
+            OsmflatStrRef{reinterpret_cast<const uint8_t*>(kv.second.data()), kv.second.size()}});
+    }
+    return refs;
+}
+
 mapnik::featureset_ptr osmflat_datasource::features(mapnik::query const& q) const
 {
     mapnik::box2d<double> const& bbox = q.get_bbox();
 
     std::vector<std::string> keys = requested_keys(q);
     std::vector<OsmflatStrRef> refs = key_refs(keys);
+    std::vector<OsmflatKvRef> filters = filter_refs(tag_filters_);
 
     feature_set fs = archive_->query(
         bbox.minx(), bbox.miny(), bbox.maxx(), bbox.maxy(),
-        kinds_.nodes, kinds_.ways, kinds_.relations, refs);
+        kinds_.nodes, kinds_.ways, kinds_.relations, refs, filters);
 
     return std::make_shared<osmflat_featureset>(std::move(fs), std::move(keys));
 }
@@ -146,10 +197,11 @@ mapnik::featureset_ptr osmflat_datasource::features_at_point(mapnik::coord2d con
     // No property list on this path; emit synthetics only.
     std::vector<std::string> keys;
     std::vector<OsmflatStrRef> refs;
+    std::vector<OsmflatKvRef> filters = filter_refs(tag_filters_);
 
     feature_set fs = archive_->query(
         pt.x - tol, pt.y - tol, pt.x + tol, pt.y + tol,
-        kinds_.nodes, kinds_.ways, kinds_.relations, refs);
+        kinds_.nodes, kinds_.ways, kinds_.relations, refs, filters);
 
     return std::make_shared<osmflat_featureset>(std::move(fs), std::move(keys));
 }

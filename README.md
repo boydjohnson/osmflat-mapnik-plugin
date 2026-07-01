@@ -46,6 +46,8 @@ include path is added automatically via `brew --prefix`.
 | `type`     | yes      | `osmflat`           | selects this plugin              |
 | `file`     | yes      | path                | the `*.osm.flat` archive dir     |
 | `osm_type` | no       | comma-separated `node`\|`way`\|`relation`\|`all` | primitives to emit (default all); e.g. `way,relation` |
+| `ext`      | no       | path                | Ext sidecar dir (`*.osm.ext`) enabling tag push-down |
+| `tags`     | no       | comma-separated `key=value` / `key=*` | tag prefilter, e.g. `highway=*` or `natural=water,natural=wood` |
 
 The datasource is **semantically neutral**: nodes → points, ways → line strings
 (open *and* closed alike — no area heuristics). The style decides fill vs. stroke
@@ -88,13 +90,20 @@ The `style-streets.xml` tiers were chosen from real archive counts via
 the harness registers Homebrew's bundled DejaVu, overridable with
 `MAPNIK_FONT_DIR`.
 
-### Performance at wide zoom
+### Tag push-down (fast wide zoom)
 
-The datasource answers a bbox query by returning **all** primitives in the box;
-it can't push a tag filter (e.g. `highway=motorway`) down into the query — mapnik
-applies `<Filter>`/`<MaxScaleDenominator>` at render time, *after* the features
-are materialized. So a state/country-sized view still walks every way/node in the
-box even though most are gated out, making wide zooms slow (≈18 s for a ~1.7°
-region). It renders correctly; it just isn't fast. The real fix is a datasource
-push-down (a highway-class / tag prefilter, or a pre-generalized overview archive)
-— noted as future work.
+Without help, the datasource returns **all** primitives in the bbox and mapnik
+applies `<Filter>`/`<MaxScaleDenominator>` at render time, so a state view walks
+every way/node even though most are gated out.
+
+The `ext` + `tags` params fix this: point `ext` at the archive's Ext sidecar
+(`osmflat-ext`, built with `osmflat-extc --taginfo`) and set `tags` to a prefilter
+that is a **superset** of the layer's rule filters (e.g. `highway=*` for a roads
+layer). The plugin then intersects the sidecar's inverted-index postings with the
+bbox spatial ranges (`osmflat_ext::query::intersect_bbox`, `O(R·log k)`), running
+the bbox scan once and materializing only matching entities. On a ~5° state view
+this cut render time from **≈32 s → ≈7.5 s** with byte-identical output.
+
+`tags` must stay a superset of what the rules match, or you'll drop features; it's
+a performance hint, not a substitute for `<Filter>`. See `test/style-full.xml`,
+whose layers set `ext`/`tags` per layer.

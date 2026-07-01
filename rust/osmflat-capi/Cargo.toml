@@ -12,9 +12,17 @@ crate-type = ["staticlib"]
 
 [dependencies]
 osmflat = { path = "../../../osmflat-rs/osmflat" }
+# Sidecar inverted tag index → push tag-filtering into the spatial query.
+osmflat-ext = { path = "../../../osmflat-ext/osmflat-ext" }
 
 [build-dependencies]
 cbindgen = "0.27"
+
+# osmflat-ext pulls osmflat via git; pin it to the same local path so the two
+# crates share one `osmflat::Osm` type (otherwise ExtArchive::open won't accept
+# our archive).
+[patch."https://github.com/boydjohnson/osmflat-rs"]
+osmflat = { path = "../../../osmflat-rs/osmflat" }
 
 [profile.release]
 lto = true
