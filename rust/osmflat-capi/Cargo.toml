@@ -1,0 +1,21 @@
+[package]
+name = "osmflat-capi"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "osmflat_capi"
+# staticlib so the Rust code is baked directly into the `osmflat.input`
+# mapnik module -- no separate dylib to locate at runtime.
+crate-type = ["staticlib"]
+
+[dependencies]
+osmflat = { path = "../../../osmflat-rs/osmflat" }
+
+[build-dependencies]
+cbindgen = "0.27"
+
+[profile.release]
+lto = true
+codegen-units = 1
