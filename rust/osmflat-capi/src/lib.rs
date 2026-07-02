@@ -668,6 +668,14 @@ fn materialize_relation(
     }
     let polygons = assemble_multipolygon(archive, idx, scale);
     if polygons.is_empty() {
+        let name = find_tag(archive, relation.tags(), b"name")
+            .map(|v| String::from_utf8_lossy(v).into_owned())
+            .unwrap_or_default();
+        eprintln!(
+            "osmflat-mapnik-plugin: dropping relation id={:?} name={:?}: outer ways don't form a closed ring",
+            relation_id(archive, idx),
+            name
+        );
         return None;
     }
     // Area from full-resolution rings, then simplify each ring for output.
@@ -710,32 +718,72 @@ fn way_node_indices(archive: &Osm, way: &Way) -> Vec<u64> {
         .collect()
 }
 
-/// Stitch open/closed member segments (each a node-index sequence) into closed
-/// rings by matching shared endpoints. Only rings that close are returned;
-/// unclosable leftovers (e.g. a member way outside a clipped extract) are dropped.
-fn assemble_rings(mut segments: Vec<Vec<u64>>) -> Vec<Vec<u64>> {
+/// Endpoints within this distance are treated as the same junction when
+/// stitching ring segments. Chosen to bridge duplicate-node seams seen in
+/// real extracts (tens to a couple hundred meters) while staying well below
+/// the gap left by genuinely missing boundary members (800m+).
+const RING_SNAP_TOLERANCE_M: f64 = 250.0;
+
+/// Approximate great-circle distance in meters between two `(lon, lat)`
+/// points in degrees. Equirectangular approximation; adequate at the scale
+/// of ring-closing gaps (tens to hundreds of meters).
+fn dist_m(a: (f64, f64), b: (f64, f64)) -> f64 {
+    const R: f64 = 6_378_137.0;
+    let (lon1, lat1) = (a.0.to_radians(), a.1.to_radians());
+    let (lon2, lat2) = (b.0.to_radians(), b.1.to_radians());
+    let x = (lon2 - lon1) * ((lat1 + lat2) / 2.0).cos();
+    let y = lat2 - lat1;
+    R * (x * x + y * y).sqrt()
+}
+
+/// Endpoints closer than this are treated as identical (floating-point
+/// round-trip noise only) — used to detect a way that is already closed on
+/// its own, which must not be confused with the much larger snap tolerance
+/// used for bridging duplicate-node seams between *different* ways.
+const EXACT_EPS_M: f64 = 0.01;
+
+/// Stitch open/closed member segments (each a coordinate sequence) into
+/// closed rings by matching endpoints, exactly or (once at least one seam
+/// between two distinct ways has been stitched) within
+/// `RING_SNAP_TOLERANCE_M` (real-world extracts sometimes encode the same
+/// junction as two distinct, near-coincident nodes). A lone way is only
+/// accepted as its own ring if its ends are exactly coincident — otherwise a
+/// short way whose two ends simply happen to be near each other would be
+/// misread as a closed area. Leftovers with a gap too large to bridge (e.g.
+/// a member way missing from a clipped extract) are dropped.
+fn assemble_rings(mut segments: Vec<Vec<(f64, f64)>>) -> Vec<Vec<(f64, f64)>> {
     let mut rings = Vec::new();
     while let Some(mut ring) = segments.pop() {
+        let mut stitched = 0u32;
         loop {
-            if ring.len() > 1 && ring.first() == ring.last() {
+            let close_dist = dist_m(*ring.first().unwrap(), *ring.last().unwrap());
+            let closed = ring.len() > 1
+                && if stitched > 0 {
+                    close_dist < RING_SNAP_TOLERANCE_M
+                } else {
+                    close_dist < EXACT_EPS_M
+                };
+            if closed {
                 rings.push(ring);
                 break;
             }
             let end = *ring.last().unwrap();
-            // Find a remaining segment sharing this open endpoint.
+            // Find a remaining segment whose near end is close to this open endpoint.
             let next = segments.iter().position(|s| {
-                s.first() == Some(&end) || s.last() == Some(&end)
+                dist_m(*s.first().unwrap(), end) < RING_SNAP_TOLERANCE_M
+                    || dist_m(*s.last().unwrap(), end) < RING_SNAP_TOLERANCE_M
             });
             match next {
                 Some(i) => {
                     let mut seg = segments.remove(i);
-                    if seg.last() == Some(&end) {
+                    if dist_m(*seg.last().unwrap(), end) < dist_m(*seg.first().unwrap(), end) {
                         seg.reverse();
                     }
-                    // seg now starts at `end`; append the rest, skipping the shared node.
+                    // seg now starts near `end`; append the rest, skipping its matched vertex.
                     ring.extend_from_slice(&seg[1..]);
+                    stitched += 1;
                 }
-                None => break, // cannot close; drop this partial ring
+                None => break, // gap too large to bridge; drop this partial ring
             }
         }
     }
@@ -766,9 +814,19 @@ fn assemble_multipolygon(archive: &Osm, rel_idx: usize, scale: f64) -> Vec<Vec<V
     let members = archive.relation_members();
     let ways = archive.ways();
     let strings = archive.stringtable();
+    let nodes = archive.nodes();
 
-    let mut outer_segs: Vec<Vec<u64>> = Vec::new();
-    let mut inner_segs: Vec<Vec<u64>> = Vec::new();
+    let to_coords = |seg: &[u64]| -> Vec<(f64, f64)> {
+        seg.iter()
+            .map(|&n| {
+                let node = &nodes[n as usize];
+                (node.lon() as f64 / scale, node.lat() as f64 / scale)
+            })
+            .collect()
+    };
+
+    let mut outer_segs: Vec<Vec<(f64, f64)>> = Vec::new();
+    let mut inner_segs: Vec<Vec<(f64, f64)>> = Vec::new();
     for member in members.at(rel_idx) {
         let RelationMembersRef::WayMember(wm) = member else {
             continue;
@@ -780,29 +838,19 @@ fn assemble_multipolygon(archive: &Osm, rel_idx: usize, scale: f64) -> Vec<Vec<V
         }
         // Role "inner" carves holes; everything else (outer, empty) is exterior.
         if strings.substring_raw(wm.role_idx() as usize) == b"inner" {
-            inner_segs.push(seg);
+            inner_segs.push(to_coords(&seg));
         } else {
-            outer_segs.push(seg);
+            outer_segs.push(to_coords(&seg));
         }
     }
 
-    let outer_rings = assemble_rings(outer_segs);
+    let outers = assemble_rings(outer_segs);
     let inner_rings = assemble_rings(inner_segs);
 
-    let nodes = archive.nodes();
-    let to_coords = |ring: &[u64]| -> Vec<(f64, f64)> {
-        ring.iter()
-            .map(|&n| {
-                let node = &nodes[n as usize];
-                (node.lon() as f64 / scale, node.lat() as f64 / scale)
-            })
-            .collect()
-    };
     let flatten = |ring: &[(f64, f64)]| -> Vec<f64> {
         ring.iter().flat_map(|&(x, y)| [x, y]).collect()
     };
 
-    let outers: Vec<Vec<(f64, f64)>> = outer_rings.iter().map(|r| to_coords(r)).collect();
     if outers.is_empty() {
         return Vec::new();
     }
@@ -810,13 +858,12 @@ fn assemble_multipolygon(archive: &Osm, rel_idx: usize, scale: f64) -> Vec<Vec<V
     // One polygon per exterior ring; assign each hole to the exterior that
     // contains its first vertex.
     let mut polygons: Vec<Vec<Vec<f64>>> = outers.iter().map(|o| vec![flatten(o)]).collect();
-    for inner in &inner_rings {
-        let inner_coords = to_coords(inner);
+    for inner_coords in &inner_rings {
         let Some(&first) = inner_coords.first() else {
             continue;
         };
         if let Some(oi) = outers.iter().position(|o| point_in_ring(first, o)) {
-            polygons[oi].push(flatten(&inner_coords));
+            polygons[oi].push(flatten(inner_coords));
         }
         // A hole with no containing exterior is dropped (malformed relation).
     }
