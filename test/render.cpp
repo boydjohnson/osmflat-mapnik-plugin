@@ -33,9 +33,9 @@ static std::string slurp(const std::string& path)
 
 int main(int argc, char** argv)
 {
-    if (argc != 9) {
+    if (argc != 9 && argc != 11) {
         std::cerr << "usage: render <plugin_dir> <style.xml> <archive_dir> "
-                     "<out.png> <minx> <miny> <maxx> <maxy>\n";
+                     "<out.png> <minx> <miny> <maxx> <maxy> [width height]\n";
         return EXIT_FAILURE;
     }
     const std::string plugin_dir = argv[1];
@@ -46,6 +46,8 @@ int main(int argc, char** argv)
     const double miny = std::stod(argv[6]);
     const double maxx = std::stod(argv[7]);
     const double maxy = std::stod(argv[8]);
+    const int width = (argc == 11) ? std::stoi(argv[9]) : 1000;
+    const int height = (argc == 11) ? std::stoi(argv[10]) : 1000;
 
     try {
         mapnik::setup();
@@ -73,7 +75,7 @@ int main(int argc, char** argv)
             xml.replace(p, std::string("@EXT@").size(), ext_dir);
         }
 
-        mapnik::Map m(1000, 1000);
+        mapnik::Map m(width, height);
         mapnik::load_map_string(m, xml);
 
         m.zoom_to_box(mapnik::box2d<double>(minx, miny, maxx, maxy));
