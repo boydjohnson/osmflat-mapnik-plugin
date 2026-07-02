@@ -257,7 +257,9 @@ fn collect_attrs(
 /// not semantics); relations are emitted only for `type=multipolygon`/`boundary`
 /// as assembled multipolygons. `keys`/`num_keys` are the tag names to
 /// materialize (from `query::property_names()`, synthetic names already stripped
-/// by the caller). Free with `osmflat_featureset_free`.
+/// by the caller). A relation can emit multiple features when an incomplete
+/// multipolygon has both closed rings and unclosed outer chains. Free with
+/// `osmflat_featureset_free`.
 ///
 /// # Safety
 /// `archive` must be valid; `keys` must point to `num_keys` valid `OsmflatStrRef`
@@ -365,18 +367,21 @@ pub unsafe extern "C" fn osmflat_query(
 
     if include_relations {
         match candidate_indices(handle, &filter_refs, bbox, Prim::Relation) {
-            Some(indices) => features.extend(
-                indices
-                    .into_iter()
-                    .filter_map(|i| materialize_relation(archive, i as usize, scale, simplify_tolerance, &key_refs)),
-            ),
+            Some(indices) => features.extend(indices.into_iter().flat_map(|i| {
+                materialize_relation(archive, i as usize, scale, simplify_tolerance, &key_refs)
+            })),
             None => {
                 let base = archive.relations().as_ptr();
-                for relation in find_relations_by_bounding_box(archive, min_x, min_y, max_x, max_y) {
+                for relation in find_relations_by_bounding_box(archive, min_x, min_y, max_x, max_y)
+                {
                     let idx = (relation as *const Relation).offset_from(base) as usize;
-                    if let Some(f) = materialize_relation(archive, idx, scale, simplify_tolerance, &key_refs) {
-                        features.push(f);
-                    }
+                    features.extend(materialize_relation(
+                        archive,
+                        idx,
+                        scale,
+                        simplify_tolerance,
+                        &key_refs,
+                    ));
                 }
             }
         }
@@ -661,13 +666,13 @@ fn materialize_relation(
     scale: f64,
     tol: f64,
     keys: &[&[u8]],
-) -> Option<OwnedFeature> {
+) -> Vec<OwnedFeature> {
     let relation = &archive.relations()[idx];
     if !is_area_relation(archive, relation) {
-        return None;
+        return Vec::new();
     }
-    let polygons = assemble_multipolygon(archive, idx, scale);
-    if polygons.is_empty() {
+    let (polygons, open_outer_chains) = assemble_multipolygon(archive, idx, scale);
+    if polygons.is_empty() && open_outer_chains.is_empty() {
         let name = find_tag(archive, relation.tags(), b"name")
             .map(|v| String::from_utf8_lossy(v).into_owned())
             .unwrap_or_default();
@@ -676,29 +681,57 @@ fn materialize_relation(
             relation_id(archive, idx),
             name
         );
-        return None;
+        return Vec::new();
     }
-    // Area from full-resolution rings, then simplify each ring for output.
-    let way_area = multipolygon_area_m2(&polygons);
-    let polygons: Vec<Vec<Vec<f64>>> = polygons
-        .into_iter()
-        .map(|poly| {
-            poly.into_iter()
-                .map(|ring| simplify_coords(&ring, tol, 4))
-                .collect()
-        })
-        .collect();
-    Some(OwnedFeature {
-        osm_id: relation_id(archive, idx),
-        osm_type: OsmflatOsmType::Relation,
-        geom_type: OsmflatGeomType::MultiPolygon,
-        is_closed: true,
-        z_order: compute_z_order(archive, relation.tags()),
-        way_area,
-        coords: Vec::new(),
-        polygons,
-        attrs: collect_attrs(archive, relation.tags(), keys),
-    })
+
+    let osm_id = relation_id(archive, idx);
+    let z_order = compute_z_order(archive, relation.tags());
+    let attrs = collect_attrs(archive, relation.tags(), keys);
+    let mut features = Vec::new();
+
+    if !polygons.is_empty() {
+        // Area from full-resolution rings, then simplify each ring for output.
+        let way_area = multipolygon_area_m2(&polygons);
+        let polygons: Vec<Vec<Vec<f64>>> = polygons
+            .into_iter()
+            .map(|poly| {
+                poly.into_iter()
+                    .map(|ring| simplify_coords(&ring, tol, 4))
+                    .collect()
+            })
+            .collect();
+        features.push(OwnedFeature {
+            osm_id,
+            osm_type: OsmflatOsmType::Relation,
+            geom_type: OsmflatGeomType::MultiPolygon,
+            is_closed: true,
+            z_order,
+            way_area,
+            coords: Vec::new(),
+            polygons,
+            attrs: attrs.clone(),
+        });
+    }
+
+    for chain in open_outer_chains {
+        let coords = simplify_coords(&chain, tol, 2);
+        if coords.len() < 4 {
+            continue;
+        }
+        features.push(OwnedFeature {
+            osm_id,
+            osm_type: OsmflatOsmType::Relation,
+            geom_type: OsmflatGeomType::LineString,
+            is_closed: false,
+            z_order,
+            way_area: 0.0,
+            coords,
+            polygons: Vec::new(),
+            attrs: attrs.clone(),
+        });
+    }
+
+    features
 }
 
 /// True if the relation is an area type whose member ways enclose polygons.
@@ -742,6 +775,11 @@ fn dist_m(a: (f64, f64), b: (f64, f64)) -> f64 {
 /// used for bridging duplicate-node seams between *different* ways.
 const EXACT_EPS_M: f64 = 0.01;
 
+struct AssembledRings {
+    rings: Vec<Vec<(f64, f64)>>,
+    open_chains: Vec<Vec<(f64, f64)>>,
+}
+
 /// Stitch open/closed member segments (each a coordinate sequence) into
 /// closed rings by matching endpoints, exactly or (once at least one seam
 /// between two distinct ways has been stitched) within
@@ -750,9 +788,10 @@ const EXACT_EPS_M: f64 = 0.01;
 /// accepted as its own ring if its ends are exactly coincident — otherwise a
 /// short way whose two ends simply happen to be near each other would be
 /// misread as a closed area. Leftovers with a gap too large to bridge (e.g.
-/// a member way missing from a clipped extract) are dropped.
-fn assemble_rings(mut segments: Vec<Vec<(f64, f64)>>) -> Vec<Vec<(f64, f64)>> {
+/// a member way missing from a clipped extract) are returned as open chains.
+fn assemble_rings_and_open_chains(mut segments: Vec<Vec<(f64, f64)>>) -> AssembledRings {
     let mut rings = Vec::new();
+    let mut open_chains = Vec::new();
     while let Some(mut ring) = segments.pop() {
         let mut stitched = 0u32;
         loop {
@@ -783,11 +822,46 @@ fn assemble_rings(mut segments: Vec<Vec<(f64, f64)>>) -> Vec<Vec<(f64, f64)>> {
                     ring.extend_from_slice(&seg[1..]);
                     stitched += 1;
                 }
-                None => break, // gap too large to bridge; drop this partial ring
+                None => {
+                    open_chains.push(ring);
+                    break;
+                }
             }
         }
     }
-    rings
+    AssembledRings { rings, open_chains }
+}
+
+fn assemble_rings(segments: Vec<Vec<(f64, f64)>>) -> Vec<Vec<(f64, f64)>> {
+    assemble_rings_and_open_chains(segments).rings
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ring_assembler_returns_unclosed_chain() {
+        let segments = vec![vec![(1.0, 0.0), (2.0, 0.0)], vec![(0.0, 0.0), (1.0, 0.0)]];
+
+        let assembled = assemble_rings_and_open_chains(segments);
+
+        assert!(assembled.rings.is_empty());
+        assert_eq!(
+            assembled.open_chains,
+            vec![vec![(0.0, 0.0), (1.0, 0.0), (2.0, 0.0)]]
+        );
+    }
+
+    #[test]
+    fn ring_assembler_keeps_closed_ring_out_of_open_chains() {
+        let segments = vec![vec![(0.0, 0.0), (0.0, 1.0), (1.0, 0.0), (0.0, 0.0)]];
+
+        let assembled = assemble_rings_and_open_chains(segments);
+
+        assert_eq!(assembled.rings.len(), 1);
+        assert!(assembled.open_chains.is_empty());
+    }
 }
 
 /// Ray-casting point-in-polygon test against a ring of `(x, y)` vertices.
@@ -808,9 +882,14 @@ fn point_in_ring(pt: (f64, f64), ring: &[(f64, f64)]) -> bool {
 }
 
 /// Assemble a `type=multipolygon`/`boundary` relation into polygons, each an
-/// exterior ring followed by the holes it contains. Returns
-/// `polygons[p][r]` = interleaved `[x0, y0, ...]` coords for ring `r`.
-fn assemble_multipolygon(archive: &Osm, rel_idx: usize, scale: f64) -> Vec<Vec<Vec<f64>>> {
+/// exterior ring followed by the holes it contains, plus any unclosed exterior
+/// chains. Returns `polygons[p][r]` = interleaved `[x0, y0, ...]` coords for
+/// ring `r`, and open outer chains as interleaved line coords.
+fn assemble_multipolygon(
+    archive: &Osm,
+    rel_idx: usize,
+    scale: f64,
+) -> (Vec<Vec<Vec<f64>>>, Vec<Vec<f64>>) {
     let members = archive.relation_members();
     let ways = archive.ways();
     let strings = archive.stringtable();
@@ -831,7 +910,9 @@ fn assemble_multipolygon(archive: &Osm, rel_idx: usize, scale: f64) -> Vec<Vec<V
         let RelationMembersRef::WayMember(wm) = member else {
             continue;
         };
-        let Some(way_idx) = wm.way_idx() else { continue };
+        let Some(way_idx) = wm.way_idx() else {
+            continue;
+        };
         let seg = way_node_indices(archive, &ways[way_idx as usize]);
         if seg.len() < 2 {
             continue;
@@ -844,15 +925,20 @@ fn assemble_multipolygon(archive: &Osm, rel_idx: usize, scale: f64) -> Vec<Vec<V
         }
     }
 
-    let outers = assemble_rings(outer_segs);
+    let assembled_outers = assemble_rings_and_open_chains(outer_segs);
+    let outers = assembled_outers.rings;
     let inner_rings = assemble_rings(inner_segs);
 
-    let flatten = |ring: &[(f64, f64)]| -> Vec<f64> {
-        ring.iter().flat_map(|&(x, y)| [x, y]).collect()
-    };
+    let flatten =
+        |ring: &[(f64, f64)]| -> Vec<f64> { ring.iter().flat_map(|&(x, y)| [x, y]).collect() };
+    let open_outer_chains: Vec<Vec<f64>> = assembled_outers
+        .open_chains
+        .iter()
+        .map(|c| flatten(c))
+        .collect();
 
     if outers.is_empty() {
-        return Vec::new();
+        return (Vec::new(), open_outer_chains);
     }
 
     // One polygon per exterior ring; assign each hole to the exterior that
@@ -868,7 +954,7 @@ fn assemble_multipolygon(archive: &Osm, rel_idx: usize, scale: f64) -> Vec<Vec<V
         // A hole with no containing exterior is dropped (malformed relation).
     }
 
-    polygons
+    (polygons, open_outer_chains)
 }
 
 /// Frees a feature set.
