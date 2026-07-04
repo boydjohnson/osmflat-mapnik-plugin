@@ -97,17 +97,22 @@ public:
 
     /// Bounding-box query. `keys` are the tag names to materialize; `filters` is
     /// the optional tag prefilter (`key=value` / `key=*`) pushed into the query
-    /// via the Ext inverted index. Both are borrowed and must outlive the call.
+    /// via the Ext inverted index; `member_filters` is the optional
+    /// relation-membership filter (`member_of` param): terms ANDed, nodes/ways
+    /// emitted only as members of a matching relation. All are borrowed and
+    /// must outlive the call.
     feature_set query(double min_x, double min_y, double max_x, double max_y,
                       bool include_nodes, bool include_ways, bool include_relations,
                       const std::vector<OsmflatStrRef>& keys,
                       const std::vector<OsmflatKvRef>& filters,
+                      const std::vector<OsmflatKvRef>& member_filters,
                       OsmflatOrder order, double simplify_tolerance) const {
         return feature_set(osmflat_query(handle_, min_x, min_y, max_x, max_y,
                                          include_nodes, include_ways, include_relations,
                                          keys.data(), keys.size(),
-                                         filters.data(), filters.size(), order,
-                                         simplify_tolerance));
+                                         filters.data(), filters.size(),
+                                         member_filters.data(), member_filters.size(),
+                                         order, simplify_tolerance));
     }
 
 private:

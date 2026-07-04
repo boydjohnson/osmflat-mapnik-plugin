@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Exercises the `member_of` relation-membership filter: only the member ways
+     of the Amtrak Borealis route relations (route=train + ref=Borealis, one per
+     direction) should draw — not the whole rail network — labeled from the
+     parent relation via the rel_* attribute redirect. -->
+<Map background-color="white" srs="+proj=longlat +datum=WGS84 +no_defs">
+
+  <Style name="borealis">
+    <Rule>
+      <LineSymbolizer stroke="#cc0000" stroke-width="2.5"/>
+      <TextSymbolizer face-name="DejaVu Sans Book" size="11" fill="#800000"
+                      placement="line" halo-radius="2" halo-fill="white"
+                      spacing="300">[rel_ref]</TextSymbolizer>
+    </Rule>
+  </Style>
+
+  <Layer name="borealis" srs="+proj=longlat +datum=WGS84 +no_defs">
+    <StyleName>borealis</StyleName>
+    <Datasource>
+      <Parameter name="type">osmflat</Parameter>
+      <Parameter name="file">@ARCHIVE@</Parameter>
+      <Parameter name="ext">@EXT@</Parameter>
+      <Parameter name="osm_type">way</Parameter>
+      <Parameter name="tags">railway=rail</Parameter>
+      <Parameter name="member_of">route=train,ref=Borealis</Parameter>
+    </Datasource>
+  </Layer>
+
+</Map>

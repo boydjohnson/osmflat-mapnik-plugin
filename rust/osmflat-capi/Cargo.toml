@@ -15,6 +15,10 @@ osmflat = { path = "../../../osmflat-rs/osmflat" }
 # Sidecar inverted tag index → push tag-filtering into the spatial query.
 osmflat-ext = { path = "../../../osmflat-ext/osmflat-ext" }
 
+[dev-dependencies]
+# Synthetic archive fixtures (tags + members) for the member_of tests.
+osmflat-extc = { path = "../../../osmflat-ext/osmflat-extc", features = ["test-support"] }
+
 [build-dependencies]
 cbindgen = "0.27"
 

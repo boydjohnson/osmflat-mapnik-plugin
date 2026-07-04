@@ -48,6 +48,7 @@ include path is added automatically via `brew --prefix`.
 | `osm_type` | no       | comma-separated `node`\|`way`\|`relation`\|`all` | primitives to emit (default all); e.g. `way,relation` |
 | `ext`      | no       | path                | Ext sidecar dir (`*.osm.ext`) enabling tag push-down |
 | `tags`     | no       | comma-separated `key=value` / `key=*` | tag prefilter, e.g. `highway=*` or `natural=water,natural=wood` |
+| `member_of` | no      | comma-separated `key=value` / `key=*` | relation-membership filter: emit only nodes/ways that are members of a relation matching **all** terms, e.g. `route=train,ref=Borealis` |
 | `numeric`  | no       | comma-separated keys | expose these tags as numbers so `[lanes] > 2` compares numerically |
 | `order`    | no       | `z_order`\|`way_area`\|`none` | draw order of returned features (default spatial); `z_order` for roads, `way_area` (desc) for areas |
 | `simplify` | no       | pixels (float, default `0.5`) | scale-aware Douglas–Peucker tolerance; geometry generalized to sub-pixel per zoom. `0` disables |
@@ -91,6 +92,7 @@ Example styles under `test/` (each uses `@ARCHIVE@` as the archive placeholder):
 | `style-labels.xml`  | line-placement street labels + POI labels (needs fonts) |
 | `style-streets.xml` | urban street ramp: casing/fill tiers, oneway arrows, bridges, labels |
 | `style-relations.xml` | `type=multipolygon`/`boundary` relations as filled polygons with holes |
+| `style-borealis.xml` | `member_of` route highlighting: only the Amtrak Borealis member ways, labeled via `[rel_ref]` |
 
 The `style-streets.xml` tiers were chosen from real archive counts via
 `osmflat-taginfo` (see the project memory). Text styles need fonts registered —
@@ -114,6 +116,40 @@ this cut render time from **≈32 s → ≈7.5 s** with byte-identical output.
 `tags` must stay a superset of what the rules match, or you'll drop features; it's
 a performance hint, not a substitute for `<Filter>`. See `test/style-full.xml`,
 whose layers set `ext`/`tags` per layer.
+
+### Relation membership (`member_of`)
+
+Route relations (`type=route`) carry the interesting tags (`ref=Borealis`,
+`network=Amtrak`) but no drawable geometry of their own — the rails are member
+ways. `member_of` styles those members:
+
+```xml
+<Parameter name="osm_type">way</Parameter>
+<Parameter name="tags">railway=rail</Parameter>
+<Parameter name="member_of">route=train,ref=Borealis</Parameter>
+```
+
+emits only the ways that are members of a relation matching **all** the
+`member_of` terms (AND — unlike `tags`, whose terms union), as ordinary line
+geometry. The matched parent relation's tags are exposed to the style as
+`rel_`-prefixed attributes (`[rel_ref]`, `[rel_name]`, …), while unprefixed
+keys still read the member's own tags. One feature is emitted per
+(member × matched relation) pair, so a way on two matching routes appears once
+per route with that route's `rel_*` values. See `test/style-borealis.xml`.
+
+Notes:
+- Works for node members too (`osm_type=node` → stop positions).
+- `member_of` composes with `tags` and the bbox (all must pass). It is
+  enforced even without the `ext` sidecar via a full relation scan (slower —
+  the sidecar's inverted index makes the relation match cheap); `tags` remains
+  sidecar-only either way.
+- `osm_type=relation` emission is unaffected: membership does not recurse, so
+  relation-as-member (e.g. a `route_master`'s routes) is skipped, and
+  area relations still render through the multipolygon path.
+- Keep `member_of` selective (a specific route, network, or operator): all
+  members of every matching relation are expanded before the bbox clips them.
+- While `member_of` is active, a genuine OSM tag literally named `rel_*` on a
+  member is shadowed by the parent-relation redirect.
 
 The `simplify` param (default 0.5 px, on) generalizes geometry to sub-pixel using
 the query resolution — scale-aware, so it self-adjusts at every zoom. It's

@@ -81,6 +81,22 @@ unsafe fn str_ref<'a>(s: &OsmflatStrRef) -> Option<&'a [u8]> {
     }
 }
 
+/// Parse a borrowed `OsmflatKvRef` array: each term is `(key, Some(value))`
+/// for `key=value`, or `(key, None)` for `key=*` (zero-length value).
+unsafe fn kv_refs<'a>(ptr: *const OsmflatKvRef, num: usize) -> Vec<(&'a [u8], Option<&'a [u8]>)> {
+    if num == 0 || ptr.is_null() {
+        return Vec::new();
+    }
+    slice::from_raw_parts(ptr, num)
+        .iter()
+        .filter_map(|f| {
+            let key = str_ref(&f.key)?;
+            let val = str_ref(&f.val);
+            Some((key, val.filter(|v| !v.is_empty())))
+        })
+        .collect()
+}
+
 /// A borrowed attribute value handed *out* to C++. `present == false` means the
 /// feature has no such tag (render as `value_null`); otherwise `ptr`/`len` are
 /// the UTF-8 value bytes, valid until the next `osmflat_featureset_next` / free.
@@ -240,14 +256,25 @@ pub unsafe extern "C" fn osmflat_archive_envelope(
     true
 }
 
-/// Look up the requested tag values for `range`, aligned to `keys`.
+/// Look up the requested tag values for `range`, aligned to `keys`. When
+/// `rel_tags` is set (a `member_of` query), keys prefixed `rel_` are answered
+/// from the matched parent relation's tag range instead of the feature's own —
+/// so a style can reference `[rel_ref]`/`[rel_name]` on member geometry. While
+/// active, this shadows any genuine OSM tag literally named `rel_*`.
 fn collect_attrs(
     archive: &Osm,
     range: std::ops::Range<u64>,
+    rel_tags: Option<&std::ops::Range<u64>>,
     keys: &[&[u8]],
 ) -> Vec<Option<Vec<u8>>> {
     keys.iter()
-        .map(|key| find_tag(archive, range.clone(), key).map(|v| v.to_vec()))
+        .map(|key| {
+            let (range, key) = match (rel_tags, key.strip_prefix(b"rel_".as_slice())) {
+                (Some(r), Some(stripped)) => (r, stripped),
+                _ => (&range, *key),
+            };
+            find_tag(archive, range.clone(), key).map(|v| v.to_vec())
+        })
         .collect()
 }
 
@@ -261,9 +288,18 @@ fn collect_attrs(
 /// multipolygon has both closed rings and unclosed outer chains. Free with
 /// `osmflat_featureset_free`.
 ///
+/// `member_filters` (the `member_of` datasource param) is a relation-membership
+/// filter: when non-empty, nodes/ways are emitted only if they are members of a
+/// relation matching *all* the terms (AND — unlike `filters`, which unions),
+/// one feature per (member × matched relation) pair, and `rel_`-prefixed keys
+/// resolve against the matched parent relation's tags. It is enforced even
+/// without an Ext sidecar (via a full relation scan). Relation emission is
+/// unaffected — membership does not recurse.
+///
 /// # Safety
 /// `archive` must be valid; `keys` must point to `num_keys` valid `OsmflatStrRef`
-/// whose byte ranges are valid for the duration of the call.
+/// whose byte ranges are valid for the duration of the call; likewise `filters`
+/// and `member_filters` with their counts.
 #[no_mangle]
 pub unsafe extern "C" fn osmflat_query(
     archive: *const OsmflatArchive,
@@ -278,6 +314,8 @@ pub unsafe extern "C" fn osmflat_query(
     num_keys: usize,
     filters: *const OsmflatKvRef,
     num_filters: usize,
+    member_filters: *const OsmflatKvRef,
+    num_member_filters: usize,
     order: OsmflatOrder,
     simplify_tolerance: f64,
 ) -> *mut OsmflatFeatureSet {
@@ -302,20 +340,8 @@ pub unsafe extern "C" fn osmflat_query(
             .collect()
     };
 
-    // Parse the tag prefilter: each `(key, Some(value))` is `key=value`; a
-    // zero-length value means `key=*` (any value of the key).
-    let filter_refs: Vec<(&[u8], Option<&[u8]>)> = if num_filters == 0 {
-        Vec::new()
-    } else {
-        slice::from_raw_parts(filters, num_filters)
-            .iter()
-            .filter_map(|f| {
-                let key = str_ref(&f.key)?;
-                let val = str_ref(&f.val);
-                Some((key, val.filter(|v| !v.is_empty())))
-            })
-            .collect()
-    };
+    let filter_refs = kv_refs(filters, num_filters);
+    let member_filter_refs = kv_refs(member_filters, num_member_filters);
 
     let bbox = Bbox {
         min_lon: min_x,
@@ -329,36 +355,86 @@ pub unsafe extern "C" fn osmflat_query(
     // For each primitive: if a prefilter is set and the sidecar is present, walk
     // only the candidate indices from the inverted index ∩ bbox; otherwise scan
     // the full spatial query.
-    if include_nodes {
-        match candidate_indices(handle, &filter_refs, bbox, Prim::Node) {
-            Some(indices) => features.extend(
-                indices
-                    .into_iter()
-                    .map(|i| materialize_node(archive, i as usize, scale, &key_refs)),
-            ),
-            None => {
-                let base = archive.nodes().as_ptr();
-                for node in find_nodes_by_bounding_box(archive, min_x, min_y, max_x, max_y) {
-                    let idx = (node as *const Node).offset_from(base) as usize;
-                    features.push(materialize_node(archive, idx, scale, &key_refs));
+    if !member_filter_refs.is_empty() {
+        // member_of: forward join. Match relations by tags (AND), expand their
+        // node/way members, and keep only members that also pass the tag
+        // prefilter (when sidecar-backed) and the bbox. One feature per
+        // (member × matched relation) pair so `rel_*` attrs are well-defined.
+        let rels = relations_matching_all(handle, &member_filter_refs);
+        let (node_pairs, way_pairs) =
+            expand_member_pairs(archive, &rels, include_nodes, include_ways);
+        if include_nodes {
+            let allowed = candidate_indices(handle, &filter_refs, bbox, Prim::Node)
+                .unwrap_or_else(|| osmflat_ext::query::node_indices_in_bbox(archive, bbox));
+            for (n, r) in node_pairs {
+                if allowed.binary_search(&n).is_ok() {
+                    let rel_tags = archive.relations()[r as usize].tags();
+                    features.push(materialize_node(
+                        archive,
+                        n as usize,
+                        scale,
+                        &key_refs,
+                        Some(&rel_tags),
+                    ));
                 }
             }
         }
-    }
-
-    if include_ways {
-        match candidate_indices(handle, &filter_refs, bbox, Prim::Way) {
-            Some(indices) => features.extend(
-                indices
-                    .into_iter()
-                    .filter_map(|i| materialize_way(archive, i as usize, scale, simplify_tolerance, &key_refs)),
-            ),
-            None => {
-                let base = archive.ways().as_ptr();
-                for way in find_ways_by_bounding_box(archive, min_x, min_y, max_x, max_y) {
-                    let idx = (way as *const Way).offset_from(base) as usize;
-                    if let Some(f) = materialize_way(archive, idx, scale, simplify_tolerance, &key_refs) {
+        if include_ways {
+            let allowed = candidate_indices(handle, &filter_refs, bbox, Prim::Way)
+                .unwrap_or_else(|| osmflat_ext::query::way_indices_in_bbox(archive, bbox));
+            for (w, r) in way_pairs {
+                if allowed.binary_search(&w).is_ok() {
+                    let rel_tags = archive.relations()[r as usize].tags();
+                    if let Some(f) = materialize_way(
+                        archive,
+                        w as usize,
+                        scale,
+                        simplify_tolerance,
+                        &key_refs,
+                        Some(&rel_tags),
+                    ) {
                         features.push(f);
+                    }
+                }
+            }
+        }
+    } else {
+        if include_nodes {
+            match candidate_indices(handle, &filter_refs, bbox, Prim::Node) {
+                Some(indices) => features.extend(
+                    indices
+                        .into_iter()
+                        .map(|i| materialize_node(archive, i as usize, scale, &key_refs, None)),
+                ),
+                None => {
+                    let base = archive.nodes().as_ptr();
+                    for node in find_nodes_by_bounding_box(archive, min_x, min_y, max_x, max_y) {
+                        let idx = (node as *const Node).offset_from(base) as usize;
+                        features.push(materialize_node(archive, idx, scale, &key_refs, None));
+                    }
+                }
+            }
+        }
+
+        if include_ways {
+            match candidate_indices(handle, &filter_refs, bbox, Prim::Way) {
+                Some(indices) => features.extend(indices.into_iter().filter_map(|i| {
+                    materialize_way(archive, i as usize, scale, simplify_tolerance, &key_refs, None)
+                })),
+                None => {
+                    let base = archive.ways().as_ptr();
+                    for way in find_ways_by_bounding_box(archive, min_x, min_y, max_x, max_y) {
+                        let idx = (way as *const Way).offset_from(base) as usize;
+                        if let Some(f) = materialize_way(
+                            archive,
+                            idx,
+                            scale,
+                            simplify_tolerance,
+                            &key_refs,
+                            None,
+                        ) {
+                            features.push(f);
+                        }
                     }
                 }
             }
@@ -468,6 +544,124 @@ fn candidate_indices(
     all.sort_unstable();
     all.dedup();
     Some(all)
+}
+
+/// Intersection of two ascending, deduped index lists (linear merge).
+fn intersect_sorted_u64(a: &[u64], b: &[u64]) -> Vec<u64> {
+    let mut out = Vec::new();
+    let (mut i, mut j) = (0, 0);
+    while i < a.len() && j < b.len() {
+        match a[i].cmp(&b[j]) {
+            std::cmp::Ordering::Less => i += 1,
+            std::cmp::Ordering::Greater => j += 1,
+            std::cmp::Ordering::Equal => {
+                out.push(a[i]);
+                i += 1;
+                j += 1;
+            }
+        }
+    }
+    out
+}
+
+/// Ascending relation indices whose tags match *all* of `filters` (AND — unlike
+/// the `tags` prefilter, whose terms union). Uses the Ext inverted index when
+/// loaded; otherwise falls back to a full relation scan with `find_tag`, so the
+/// filter is enforced either way — a style cannot re-express relation
+/// membership itself, unlike a tag filter.
+fn relations_matching_all(
+    handle: &OsmflatArchive,
+    filters: &[(&[u8], Option<&[u8]>)],
+) -> Vec<u64> {
+    if filters.is_empty() {
+        return Vec::new();
+    }
+    let archive = handle.osm();
+    let Some(taginfo) = handle.taginfo() else {
+        // No sidecar: scan every relation (flatdata trims the range sentinel
+        // from the slice, so every element is a real relation).
+        return (0..archive.relations().len())
+            .filter(|&i| {
+                let tags = archive.relations()[i].tags();
+                filters.iter().all(|(key, val)| match val {
+                    Some(v) => find_tag(archive, tags.clone(), key) == Some(*v),
+                    None => find_tag(archive, tags.clone(), key).is_some(),
+                })
+            })
+            .map(|i| i as u64)
+            .collect();
+    };
+
+    let mut term_sets: Vec<Vec<u64>> = Vec::with_capacity(filters.len());
+    for (key, val) in filters {
+        let set: Vec<u64> = match val {
+            Some(value) => taginfo
+                .kv(key, value)
+                .map(|vv| vv.relations().iter().map(|r| r.value()).collect())
+                .unwrap_or_default(),
+            // key=* : union the relation postings over all of the key's values.
+            None => taginfo
+                .key(key)
+                .map(|kview| {
+                    let lists: Vec<&[osmflat_ext::Ref]> =
+                        kview.values().map(|vv| vv.relations()).collect();
+                    osmflat_ext::query::union(&lists).collect()
+                })
+                .unwrap_or_default(),
+        };
+        if set.is_empty() {
+            return Vec::new();
+        }
+        term_sets.push(set);
+    }
+    // Intersect smallest-first to keep the accumulator minimal.
+    term_sets.sort_by_key(|s| s.len());
+    let mut iter = term_sets.into_iter();
+    let mut acc = iter.next().unwrap();
+    for set in iter {
+        acc = intersect_sorted_u64(&acc, &set);
+        if acc.is_empty() {
+            break;
+        }
+    }
+    acc
+}
+
+/// Distinct `(member_idx, relation_idx)` pairs for the node and way members of
+/// `rels`, each list sorted so members stay in ascending (spatial) index order.
+/// Relation-as-member is skipped: membership does not recurse, so e.g. a
+/// `route_master` match yields nothing.
+fn expand_member_pairs(
+    archive: &Osm,
+    rels: &[u64],
+    want_nodes: bool,
+    want_ways: bool,
+) -> (Vec<(u64, u64)>, Vec<(u64, u64)>) {
+    let members = archive.relation_members();
+    let mut node_pairs = Vec::new();
+    let mut way_pairs = Vec::new();
+    for &r in rels {
+        for member in members.at(r as usize) {
+            match member {
+                RelationMembersRef::NodeMember(m) if want_nodes => {
+                    if let Some(n) = m.node_idx() {
+                        node_pairs.push((n, r));
+                    }
+                }
+                RelationMembersRef::WayMember(m) if want_ways => {
+                    if let Some(w) = m.way_idx() {
+                        way_pairs.push((w, r));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    for pairs in [&mut node_pairs, &mut way_pairs] {
+        pairs.sort_unstable();
+        pairs.dedup();
+    }
+    (node_pairs, way_pairs)
 }
 
 /// Spherical area (m²) of a ring given as interleaved `[lon, lat, ...]` degrees.
@@ -600,7 +794,13 @@ fn multipolygon_area_m2(polygons: &[Vec<Vec<f64>>]) -> f64 {
         .sum()
 }
 
-fn materialize_node(archive: &Osm, idx: usize, scale: f64, keys: &[&[u8]]) -> OwnedFeature {
+fn materialize_node(
+    archive: &Osm,
+    idx: usize,
+    scale: f64,
+    keys: &[&[u8]],
+    rel_tags: Option<&std::ops::Range<u64>>,
+) -> OwnedFeature {
     let node = &archive.nodes()[idx];
     OwnedFeature {
         osm_id: node_id(archive, idx),
@@ -611,7 +811,7 @@ fn materialize_node(archive: &Osm, idx: usize, scale: f64, keys: &[&[u8]]) -> Ow
         way_area: 0.0,
         coords: vec![node.lon() as f64 / scale, node.lat() as f64 / scale],
         polygons: Vec::new(),
-        attrs: collect_attrs(archive, node.tags(), keys),
+        attrs: collect_attrs(archive, node.tags(), rel_tags, keys),
     }
 }
 
@@ -621,6 +821,7 @@ fn materialize_way(
     scale: f64,
     tol: f64,
     keys: &[&[u8]],
+    rel_tags: Option<&std::ops::Range<u64>>,
 ) -> Option<OwnedFeature> {
     let way = &archive.ways()[idx];
     let refs = way.refs();
@@ -656,7 +857,7 @@ fn materialize_way(
         way_area,
         coords,
         polygons: Vec::new(),
-        attrs: collect_attrs(archive, way.tags(), keys),
+        attrs: collect_attrs(archive, way.tags(), rel_tags, keys),
     })
 }
 
@@ -686,7 +887,7 @@ fn materialize_relation(
 
     let osm_id = relation_id(archive, idx);
     let z_order = compute_z_order(archive, relation.tags());
-    let attrs = collect_attrs(archive, relation.tags(), keys);
+    let attrs = collect_attrs(archive, relation.tags(), None, keys);
     let mut features = Vec::new();
 
     if !polygons.is_empty() {
@@ -861,6 +1062,198 @@ mod tests {
 
         assert_eq!(assembled.rings.len(), 1);
         assert!(assembled.open_chains.is_empty());
+    }
+
+    #[test]
+    fn intersect_sorted_u64_basics() {
+        assert!(intersect_sorted_u64(&[], &[1, 2]).is_empty());
+        assert!(intersect_sorted_u64(&[1, 3, 5], &[2, 4, 6]).is_empty());
+        assert_eq!(
+            intersect_sorted_u64(&[1, 2, 5, 9], &[2, 5, 8, 9]),
+            vec![2, 5, 9]
+        );
+    }
+
+    use osmflat_extc::test_support::{
+        build_ext_archive, build_parent_archive, Fixture, MemberSpec, NodeSpec, RelationSpec,
+        TagSpec, WaySpec, COORD_SCALE,
+    };
+
+    fn tag(key: &'static str, value: &'static str) -> TagSpec {
+        TagSpec::new(key, value)
+    }
+
+    /// Two route relations: A (`route=train`, `ref=Borealis`) with a stop node,
+    /// two rail ways (one listed twice — must dedup) and a relation member
+    /// (must be skipped: no recursion); B (`route=bus`) sharing way 0.
+    fn route_fixture() -> Fixture {
+        Fixture {
+            nodes: vec![
+                NodeSpec {
+                    lon: -93.2,
+                    lat: 44.90,
+                    tags: vec![tag("railway", "stop")],
+                },
+                NodeSpec {
+                    lon: -93.1,
+                    lat: 44.95,
+                    tags: vec![],
+                },
+                NodeSpec {
+                    lon: -93.0,
+                    lat: 45.00,
+                    tags: vec![],
+                },
+                NodeSpec {
+                    lon: -92.9,
+                    lat: 45.05,
+                    tags: vec![],
+                },
+            ],
+            ways: vec![
+                WaySpec {
+                    refs: vec![0, 1, 2],
+                    tags: vec![tag("railway", "rail")],
+                },
+                WaySpec {
+                    refs: vec![2, 3],
+                    tags: vec![tag("railway", "rail")],
+                },
+            ],
+            relations: vec![
+                RelationSpec {
+                    bbox: Some((-93.2, 44.90, -92.9, 45.05)),
+                    members: vec![
+                        MemberSpec::Node(0),
+                        MemberSpec::Way(0),
+                        MemberSpec::Way(1),
+                        MemberSpec::Way(1),
+                        MemberSpec::Relation(1),
+                    ],
+                    tags: vec![
+                        tag("type", "route"),
+                        tag("route", "train"),
+                        tag("ref", "Borealis"),
+                    ],
+                },
+                RelationSpec {
+                    bbox: Some((-93.2, 44.90, -93.0, 45.00)),
+                    members: vec![MemberSpec::Way(0)],
+                    tags: vec![tag("type", "route"), tag("route", "bus")],
+                },
+            ],
+        }
+    }
+
+    /// Handle without a sidecar: exercises the full-scan fallback.
+    fn plain_handle() -> OsmflatArchive {
+        let parent = build_parent_archive(&route_fixture()).unwrap();
+        OsmflatArchive {
+            kind: ArchiveKind::Plain(parent),
+            coord_scale: COORD_SCALE as f64,
+        }
+    }
+
+    /// Handle with a taginfo sidecar: exercises the inverted-index path.
+    fn ext_handle() -> OsmflatArchive {
+        let parent = build_parent_archive(&route_fixture()).unwrap();
+        let opts = osmflat_extc::BuildOptions {
+            taginfo: true,
+            backrefs: false,
+            combinations: false,
+            mmap_scratch: None,
+        };
+        OsmflatArchive {
+            kind: ArchiveKind::Ext(build_ext_archive(parent, &opts).unwrap()),
+            coord_scale: COORD_SCALE as f64,
+        }
+    }
+
+    /// Index of the (single) relation carrying `key=value`, after the
+    /// builder's spatial reordering.
+    fn relation_with(archive: &Osm, key: &[u8], value: &[u8]) -> u64 {
+        (0..archive.relations().len())
+            .find(|&i| find_tag(archive, archive.relations()[i].tags(), key) == Some(value))
+            .unwrap() as u64
+    }
+
+    #[test]
+    fn relations_matching_all_ands_terms_on_both_paths() {
+        for handle in [plain_handle(), ext_handle()] {
+            let archive = handle.osm();
+            let train = relation_with(archive, b"route", b"train");
+            let bus = relation_with(archive, b"route", b"bus");
+
+            let filters = vec![
+                (b"route".as_slice(), Some(b"train".as_slice())),
+                (b"ref".as_slice(), Some(b"Borealis".as_slice())),
+            ];
+            assert_eq!(relations_matching_all(&handle, &filters), vec![train]);
+
+            // AND, not OR: one non-matching term empties the result.
+            let filters = vec![
+                (b"route".as_slice(), Some(b"train".as_slice())),
+                (b"ref".as_slice(), Some(b"Nope".as_slice())),
+            ];
+            assert!(relations_matching_all(&handle, &filters).is_empty());
+
+            // Wildcard term: any relation carrying the key.
+            let filters = vec![(b"route".as_slice(), None)];
+            let mut expected = vec![train, bus];
+            expected.sort_unstable();
+            assert_eq!(relations_matching_all(&handle, &filters), expected);
+
+            assert!(relations_matching_all(&handle, &[]).is_empty());
+        }
+    }
+
+    #[test]
+    fn expand_member_pairs_dedups_and_skips_relation_members() {
+        let handle = plain_handle();
+        let archive = handle.osm();
+        let train = relation_with(archive, b"route", b"train");
+
+        let (node_pairs, way_pairs) = expand_member_pairs(archive, &[train], true, true);
+
+        assert_eq!(node_pairs.len(), 1);
+        assert_eq!(way_pairs.len(), 2); // duplicate way deduped, relation member dropped
+        assert!(node_pairs.iter().chain(&way_pairs).all(|&(_, r)| r == train));
+        assert!(way_pairs[0].0 < way_pairs[1].0); // ascending (spatial) order
+
+        // want_* gates each list independently.
+        let (no_nodes, ways_only) = expand_member_pairs(archive, &[train], false, true);
+        assert!(no_nodes.is_empty());
+        assert_eq!(ways_only, way_pairs);
+    }
+
+    #[test]
+    fn rel_prefixed_keys_resolve_from_parent_relation() {
+        let handle = plain_handle();
+        let archive = handle.osm();
+        let train = relation_with(archive, b"route", b"train");
+        let (_, way_pairs) = expand_member_pairs(archive, &[train], false, true);
+        let (w, r) = way_pairs[0];
+
+        let rel_tags = archive.relations()[r as usize].tags();
+        let keys = vec![
+            b"railway".as_slice(),
+            b"ref".as_slice(),
+            b"rel_ref".as_slice(),
+            b"rel_route".as_slice(),
+        ];
+        let feat =
+            materialize_way(archive, w as usize, handle.coord_scale, 0.0, &keys, Some(&rel_tags))
+                .unwrap();
+
+        assert_eq!(feat.attrs[0].as_deref(), Some(b"rail".as_slice())); // own tag
+        assert_eq!(feat.attrs[1], None); // the way itself has no `ref`
+        assert_eq!(feat.attrs[2].as_deref(), Some(b"Borealis".as_slice()));
+        assert_eq!(feat.attrs[3].as_deref(), Some(b"train".as_slice()));
+
+        // Without a parent relation, `rel_*` is just a literal (absent) tag.
+        let plain = materialize_way(archive, w as usize, handle.coord_scale, 0.0, &keys, None)
+            .unwrap();
+        assert_eq!(plain.attrs[2], None);
     }
 }
 

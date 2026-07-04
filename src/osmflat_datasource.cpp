@@ -92,6 +92,16 @@ void osmflat_datasource::init(mapnik::parameters const& params)
         tag_filters_ = parse_tag_filters(*tags);
     }
 
+    // `member_of`: relation-membership filter, e.g. "route=train,ref=Borealis".
+    // Unlike `tags`, the terms AND together, and nodes/ways are emitted only as
+    // members of a relation matching all of them (parent tags exposed as
+    // `rel_*` attributes). Enforced even without `ext`, via a full relation
+    // scan (slower).
+    std::optional<std::string> member_of = params.get<std::string>("member_of");
+    if (member_of) {
+        member_of_filters_ = parse_tag_filters(*member_of);
+    }
+
     // `ext`: optional Ext sidecar directory enabling the tag push-down.
     std::optional<std::string> ext = params.get<std::string>("ext");
     archive_ = std::make_shared<archive>(*file, ext ? *ext : std::string());
@@ -216,6 +226,7 @@ mapnik::featureset_ptr osmflat_datasource::features(mapnik::query const& q) cons
     std::vector<std::string> keys = requested_keys(q);
     std::vector<OsmflatStrRef> refs = key_refs(keys);
     std::vector<OsmflatKvRef> filters = filter_refs(tag_filters_);
+    std::vector<OsmflatKvRef> member_filters = filter_refs(member_of_filters_);
 
     // Scale-aware tolerance: `resolution` is pixels per map unit, so one pixel
     // is 1/res map units. Simplify at `simplify_px_` pixels.
@@ -232,7 +243,8 @@ mapnik::featureset_ptr osmflat_datasource::features(mapnik::query const& q) cons
 
     feature_set fs = archive_->query(
         bbox.minx(), bbox.miny(), bbox.maxx(), bbox.maxy(),
-        kinds_.nodes, kinds_.ways, kinds_.relations, refs, filters, order_, tol);
+        kinds_.nodes, kinds_.ways, kinds_.relations, refs, filters, member_filters,
+        order_, tol);
 
     return std::make_shared<osmflat_featureset>(std::move(fs), std::move(keys), numeric_keys_);
 }
@@ -243,11 +255,12 @@ mapnik::featureset_ptr osmflat_datasource::features_at_point(mapnik::coord2d con
     std::vector<std::string> keys;
     std::vector<OsmflatStrRef> refs;
     std::vector<OsmflatKvRef> filters = filter_refs(tag_filters_);
+    std::vector<OsmflatKvRef> member_filters = filter_refs(member_of_filters_);
 
     feature_set fs = archive_->query(
         pt.x - tol, pt.y - tol, pt.x + tol, pt.y + tol,
-        kinds_.nodes, kinds_.ways, kinds_.relations, refs, filters, order_,
-        0.0);   // no simplification for point queries
+        kinds_.nodes, kinds_.ways, kinds_.relations, refs, filters, member_filters,
+        order_, 0.0);   // no simplification for point queries
 
     return std::make_shared<osmflat_featureset>(std::move(fs), std::move(keys), numeric_keys_);
 }

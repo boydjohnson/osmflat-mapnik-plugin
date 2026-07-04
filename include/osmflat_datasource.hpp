@@ -57,6 +57,11 @@ private:
     // Stored stably so the query can borrow the bytes.
     std::vector<std::pair<std::string, std::string>> tag_filters_;
 
+    // Relation-membership filter from the `member_of` param, same encoding as
+    // `tag_filters_` but the terms AND: nodes/ways are emitted only as members
+    // of a relation matching all terms.
+    std::vector<std::pair<std::string, std::string>> member_of_filters_;
+
     // Tag keys from the `numeric` param to coerce to numeric attributes.
     std::set<std::string> numeric_keys_;
 
