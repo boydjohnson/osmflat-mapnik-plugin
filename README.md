@@ -124,6 +124,41 @@ Render a fixture's osmflat archive:
     test/fixtures/baarle-hertog.osm.flat baarle.png 4.75 51.38 5.02 51.49
 ```
 
+### osmflat vs. geojson.input equivalence (`compare_plugins`)
+
+`compare_plugins` (built alongside `render` under `BUILD_RENDER_TEST`) drives
+the osmflat plugin and mapnik's `geojson.input` plugin directly through
+`datasource::features()` — no rendering, no style XML — and diffs the
+polygon/multi_polygon features each one assembles from a `.osm.flat` archive
+and its `.geojson` sibling:
+
+```sh
+./build/compare_plugins ./build/plugins /opt/homebrew/lib/mapnik/input \
+    test/fixtures/baarle-hertog.osm.flat test/fixtures/baarle-hertog.geojson \
+    4.75 51.38 5.02 51.49
+```
+
+It matches features by `name`+`admin_level` and compares, per matched pair:
+polygon count, ring count per polygon, and per-ring shoelace area (within a
+tolerance, default 1%, overridable as a trailing arg). It deliberately does
+**not** diff rendered pixels or raw point counts — see the "byte-for-byte"
+discussion in the project memory for why those are too brittle (draw-order
+and ring-closing-stitch differences between two independent assemblers
+change pixels/vertices without changing the shape). On `baarle-hertog` all
+four relations match with the two `osmflat`/`osmflat-ext` sidecar's stitched
+rings landing within 0.23% of osmium's independently-assembled area.
+
+Two gotchas this harness needed to work around, in case you extend it:
+- **osmflat's attributes are query-driven** (see mapnik-gotchas memory): a
+  bare `mapnik::query(bbox)` won't populate `name`/`admin_level` on osmflat
+  features — call `query::add_property_name()` for every tag you read.
+  `geojson.input` always exposes every property regardless, so this is a
+  no-op on that side.
+- The GeoJSON side returns every node/way/relation as Point/LineString/
+  (Multi)Polygon features in one file; only the last are comparable to
+  osmflat's `osm_type=relation` query, so the harness filters by geometry
+  type (empty polygon list = skip) rather than by tag presence.
+
 `test/fixtures/fetch-<name>.sh` scripts document how each fixture was pulled
 from Overpass and regenerate all four forms if OSM data changes (verified
 byte-identical on rerun). They `osmium sort` then `osmium extract

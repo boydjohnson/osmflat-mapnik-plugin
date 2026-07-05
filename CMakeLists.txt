@@ -84,4 +84,11 @@ if(BUILD_RENDER_TEST)
     target_include_directories(render PRIVATE ${HOMEBREW_PREFIX}/include)
     target_link_libraries(render PRIVATE PkgConfig::MAPNIK)
     add_dependencies(render osmflat_input)
+
+    # Drives the osmflat and geojson.input plugins directly (no rendering) and
+    # diffs the assembled polygon/multi_polygon features they return.
+    add_executable(compare_plugins test/compare_plugins.cpp)
+    target_include_directories(compare_plugins PRIVATE ${HOMEBREW_PREFIX}/include)
+    target_link_libraries(compare_plugins PRIVATE PkgConfig::MAPNIK)
+    add_dependencies(compare_plugins osmflat_input)
 endif()
