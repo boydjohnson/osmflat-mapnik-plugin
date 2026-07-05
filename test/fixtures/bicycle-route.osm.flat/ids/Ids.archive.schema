@@ -1,0 +1,29 @@
+namespace osm {
+struct Id
+{
+    value : u64 : 40;
+}
+}
+
+namespace osm {
+struct IdxRef
+{
+    value : u64 : 40;
+}
+}
+
+namespace osm {
+archive Ids
+{
+    nodes : vector< .osm.Id >;
+    ways : vector< .osm.Id >;
+    relations : vector< .osm.Id >;
+    @optional
+    nodes_by_id : vector< .osm.IdxRef >;
+    @optional
+    ways_by_id : vector< .osm.IdxRef >;
+    @optional
+    relations_by_id : vector< .osm.IdxRef >;
+}
+}
+

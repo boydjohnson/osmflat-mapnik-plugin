@@ -1,0 +1,14 @@
+namespace osm {
+struct Id
+{
+    value : u64 : 40;
+}
+}
+
+namespace osm {
+archive Ids
+{
+    nodes : vector< .osm.Id >;
+}
+}
+

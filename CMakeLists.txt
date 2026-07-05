@@ -91,4 +91,12 @@ if(BUILD_RENDER_TEST)
     target_include_directories(compare_plugins PRIVATE ${HOMEBREW_PREFIX}/include)
     target_link_libraries(compare_plugins PRIVATE PkgConfig::MAPNIK)
     add_dependencies(compare_plugins osmflat_input)
+
+    # Drives the osmflat plugin's `member_of` param directly and checks its
+    # output against a hardcoded ground-truth member list (no independent
+    # plugin to cross-check against for relation membership).
+    add_executable(check_member_of test/check_member_of.cpp)
+    target_include_directories(check_member_of PRIVATE ${HOMEBREW_PREFIX}/include)
+    target_link_libraries(check_member_of PRIVATE PkgConfig::MAPNIK)
+    add_dependencies(check_member_of osmflat_input)
 endif()

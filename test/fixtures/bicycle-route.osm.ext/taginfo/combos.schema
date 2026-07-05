@@ -1,0 +1,15 @@
+namespace osm_ext {
+struct ComboEntry
+{
+    other_key_idx : u64 : 40;
+    together_count : u64 : 40;
+}
+}
+
+namespace osm_ext {
+archive Taginfo
+{
+    combos : vector< .osm_ext.ComboEntry >;
+}
+}
+

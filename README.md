@@ -115,7 +115,8 @@ in as four forms built from the same source data:
 
 | fixture | why it's hard |
 |---------|---------------|
-| `baarle-hertog` | Baarle-Hertog (Belgium) / Baarle-Nassau (Netherlands) enclave complex: a single `boundary` relation whose "outer" members form ~20+ **disjoint** closed rings (scattered exclaves), not one ring with holes. `osmium export`'s independent area assembler agrees exactly: 25 polygons for Baarle-Hertog, matching `diag_sd`'s ring count |
+| `baarle-hertog` | Baarle-Hertog (Belgium) / Baarle-Nassau (Netherlands) enclave complex: a single `boundary` relation whose "outer" members form ~20+ **disjoint** closed rings (scattered exclaves), not one ring with holes. `osmium export`'s independent area assembler agrees exactly: 25 polygons for Baarle-Hertog, matching `diag_sd`'s ring count. One of those 25 also has 6 holes (the "counter-enclave" pattern — Dutch parcels inside a Belgian exclave), so this fixture covers hole-nesting too |
+| `bicycle-route`  | a small Dutch node-network cycle route relation (`type=route`, `route=bicycle`, 11 way members) plus ~260 nearby highway ways that are *not* members — the negative control needed to test that `member_of` actually excludes, not just includes |
 
 Render a fixture's osmflat archive:
 
@@ -158,6 +159,31 @@ Two gotchas this harness needed to work around, in case you extend it:
   (Multi)Polygon features in one file; only the last are comparable to
   osmflat's `osm_type=relation` query, so the harness filters by geometry
   type (empty polygon list = skip) rather than by tag presence.
+
+### `member_of` correctness (`check_member_of`)
+
+`member_of` has no equivalent in `geojson.input` (or any other stock mapnik
+plugin) to diff against, so `check_member_of` checks the osmflat plugin's own
+contract directly against a hardcoded ground-truth member list instead of
+comparing two implementations:
+
+```sh
+./build/check_member_of ./build/plugins test/fixtures/bicycle-route.osm.flat \
+    4.64 51.35 4.74 51.43
+```
+
+Against `bicycle-route`, it checks: an unfiltered `osm_type=way` query returns
+all 274 ways in the archive; `member_of=route=bicycle,ref=09-33` returns
+*exactly* the 11 known member way ids (from the Overpass fetch, not anything
+the plugin computed) each carrying `rel_ref=09-33` via the forward join; and
+a `member_of` filter matching no relation (`ref=99-99`) returns zero ways
+rather than silently passing everything through. That last case is the
+actual bug this filter could plausibly have, and only has teeth because the
+fixture's ~260 non-member highway ways give it something to wrongly include.
+
+`bicycle-route.osm.flat` is built with `osmflatc --ids` (unlike
+`baarle-hertog`) so features carry their original OSM way id for the
+ground-truth comparison.
 
 `test/fixtures/fetch-<name>.sh` scripts document how each fixture was pulled
 from Overpass and regenerate all four forms if OSM data changes (verified

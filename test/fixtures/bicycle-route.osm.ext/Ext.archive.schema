@@ -1,0 +1,119 @@
+namespace osm_ext {
+struct ExtHeader
+{
+    parent_schema_hash : u64 : 64;
+    parent_node_count : u64 : 40;
+    parent_way_count : u64 : 40;
+    parent_relation_count : u64 : 40;
+    parent_tags_count : u64 : 40;
+    parent_stringtable_len : u64 : 64;
+    parent_replication_sequence_number : i64 : 64;
+    builder_idx : u64 : 40;
+}
+}
+
+namespace osm_ext {
+struct KeyEntry
+{
+    key_idx : u64 : 40;
+    count_nodes : u64 : 40;
+    count_ways : u64 : 40;
+    count_relations : u64 : 40;
+    @range( values )
+    value_first_idx : u64 : 40;
+    @range( combos )
+    combo_first_idx : u64 : 40;
+}
+}
+
+namespace osm_ext {
+struct ValueEntry
+{
+    value_idx : u64 : 40;
+    @range( node_post )
+    node_first_idx : u64 : 40;
+    @range( way_post )
+    way_first_idx : u64 : 40;
+    @range( rel_post )
+    rel_first_idx : u64 : 40;
+    @range( tag_combos )
+    tag_combo_first_idx : u64 : 40;
+}
+}
+
+namespace osm_ext {
+struct Ref
+{
+    value : u64 : 40;
+}
+}
+
+namespace osm_ext {
+struct ComboEntry
+{
+    other_key_idx : u64 : 40;
+    together_count : u64 : 40;
+}
+}
+
+namespace osm_ext {
+struct TagComboEntry
+{
+    other_key_idx : u64 : 40;
+    other_value_idx : u64 : 40;
+    together_count : u64 : 40;
+}
+}
+
+namespace osm_ext {
+const u64 INVALID_IDX = 1099511627775;
+}
+
+namespace osm_ext {
+archive Taginfo
+{
+    keys : vector< .osm_ext.KeyEntry >;
+    values : vector< .osm_ext.ValueEntry >;
+    node_post : vector< .osm_ext.Ref >;
+    way_post : vector< .osm_ext.Ref >;
+    rel_post : vector< .osm_ext.Ref >;
+    combos : vector< .osm_ext.ComboEntry >;
+    tag_combos : vector< .osm_ext.TagComboEntry >;
+}
+}
+
+namespace osm_ext {
+struct Range
+{
+    @range( post )
+    first_idx : u64 : 40;
+}
+}
+
+namespace osm_ext {
+archive Backrefs
+{
+    node_ways_range : vector< .osm_ext.Range >;
+    ways_of_node : vector< .osm_ext.Ref >;
+    node_rels_range : vector< .osm_ext.Range >;
+    rels_of_node : vector< .osm_ext.Ref >;
+    way_rels_range : vector< .osm_ext.Range >;
+    rels_of_way : vector< .osm_ext.Ref >;
+    rel_rels_range : vector< .osm_ext.Range >;
+    rels_of_rel : vector< .osm_ext.Ref >;
+}
+}
+
+namespace osm_ext {
+archive Ext
+{
+    @explicit_reference( .osm_ext.ExtHeader.builder_idx, .osm_ext.Ext.stringtable )
+    header : .osm_ext.ExtHeader;
+    stringtable : raw_data;
+    @optional
+    taginfo : archive .osm_ext.Taginfo;
+    @optional
+    backrefs : archive .osm_ext.Backrefs;
+}
+}
+

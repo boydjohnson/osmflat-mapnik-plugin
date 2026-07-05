@@ -1,0 +1,22 @@
+namespace osm_ext {
+struct ValueEntry
+{
+    value_idx : u64 : 40;
+    @range( node_post )
+    node_first_idx : u64 : 40;
+    @range( way_post )
+    way_first_idx : u64 : 40;
+    @range( rel_post )
+    rel_first_idx : u64 : 40;
+    @range( tag_combos )
+    tag_combo_first_idx : u64 : 40;
+}
+}
+
+namespace osm_ext {
+archive Taginfo
+{
+    values : vector< .osm_ext.ValueEntry >;
+}
+}
+
