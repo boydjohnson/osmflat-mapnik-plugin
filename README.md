@@ -100,6 +100,33 @@ The `style-streets.xml` tiers were chosen from real archive counts via
 the harness registers Homebrew's bundled DejaVu, overridable with
 `MAPNIK_FONT_DIR`.
 
+### Fixtures for hard-to-map geometry
+
+`test/fixtures/` holds small `.osm.pbf` extracts of real-world edge cases that
+stress ring assembly beyond simple multipolygon-with-holes:
+
+| fixture | why it's hard |
+|---------|---------------|
+| `baarle-hertog.osm.pbf` | Baarle-Hertog (Belgium) / Baarle-Nassau (Netherlands) enclave complex: a single `boundary` relation whose "outer" members form ~20+ **disjoint** closed rings (scattered exclaves), not one ring with holes |
+
+Rebuild the archive from a fixture and render it, e.g.:
+
+```sh
+cargo run --release --manifest-path ../osmflat-rs/osmflatc/Cargo.toml -- \
+    test/fixtures/baarle-hertog.osm.pbf /tmp/baarle.osm.flat
+./build/render ./build/plugins ./test/style-relations.xml \
+    /tmp/baarle.osm.flat baarle.png 4.75 51.38 5.02 51.49
+```
+
+`test/fixtures/fetch-<name>.sh` scripts document how each fixture was pulled
+from Overpass and re-derive it if OSM data changes. They `osmium sort` then
+`osmium extract --set-bounds` before handing off to `osmflatc` — without
+`--set-bounds` the PBF header carries no bounding box, and since
+`osmflat_archive_envelope()` reads the bbox straight from the header (never
+computed from node coordinates), the plugin's envelope collapses to
+`(0,0,0,0)` and every render comes back **silently blank**, regardless of
+query bbox or style.
+
 ### Tag push-down (fast wide zoom)
 
 Without help, the datasource returns **all** primitives in the bbox and mapnik
