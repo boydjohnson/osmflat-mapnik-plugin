@@ -1,0 +1,14 @@
+namespace osm_ext {
+struct Ref
+{
+    value : u64 : 40;
+}
+}
+
+namespace osm_ext {
+archive Taginfo
+{
+    node_post : vector< .osm_ext.Ref >;
+}
+}
+

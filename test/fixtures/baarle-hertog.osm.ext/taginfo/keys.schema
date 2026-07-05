@@ -1,0 +1,21 @@
+namespace osm_ext {
+struct KeyEntry
+{
+    key_idx : u64 : 40;
+    count_nodes : u64 : 40;
+    count_ways : u64 : 40;
+    count_relations : u64 : 40;
+    @range( values )
+    value_first_idx : u64 : 40;
+    @range( combos )
+    combo_first_idx : u64 : 40;
+}
+}
+
+namespace osm_ext {
+archive Taginfo
+{
+    keys : vector< .osm_ext.KeyEntry >;
+}
+}
+

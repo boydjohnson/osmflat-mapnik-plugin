@@ -5,7 +5,14 @@
 # (scattered exclaves), not one ring with holes — a real-world torture test
 # for ring assembly beyond what simple multipolygon-with-holes fixtures cover.
 #
-# Requires: curl, osmium (brew install osmium-tool)
+# Also regenerates the derived fixtures checked in alongside the PBF:
+#   baarle-hertog.geojson    - osmium export, for the mapnik geojson.input
+#                              plugin (equivalence testing against osmflat)
+#   baarle-hertog.osm.flat/  - osmflatc archive
+#   baarle-hertog.osm.ext/   - osmflat-extc --taginfo sidecar
+#
+# Requires: curl, osmium (brew install osmium-tool), and sibling checkouts of
+# osmflat-rs (../../../osmflat-rs) and osmflat-ext (../../../osmflat-ext)
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -31,3 +38,16 @@ osmium extract \
 
 rm -f baarle.osm baarle-sorted.osm.pbf
 osmium fileinfo baarle-hertog.osm.pbf
+
+# -n keeps untagged nodes/ways (the boundary geometry itself carries no tags,
+# only the relation does); osmium assembles type=multipolygon/boundary
+# relations into MultiPolygon features the same way our ring assembly does.
+osmium export baarle-hertog.osm.pbf -n -o baarle-hertog.geojson -f geojson --overwrite
+
+rm -rf baarle-hertog.osm.flat
+cargo run --release --manifest-path ../../../osmflat-rs/osmflatc/Cargo.toml -- \
+    baarle-hertog.osm.pbf baarle-hertog.osm.flat
+
+rm -rf baarle-hertog.osm.ext
+cargo run --release --manifest-path ../../../osmflat-ext/osmflat-extc/Cargo.toml -- \
+    --taginfo --out baarle-hertog.osm.ext baarle-hertog.osm.flat

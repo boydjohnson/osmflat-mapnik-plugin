@@ -1,0 +1,22 @@
+namespace osm_ext {
+struct ExtHeader
+{
+    parent_schema_hash : u64 : 64;
+    parent_node_count : u64 : 40;
+    parent_way_count : u64 : 40;
+    parent_relation_count : u64 : 40;
+    parent_tags_count : u64 : 40;
+    parent_stringtable_len : u64 : 64;
+    parent_replication_sequence_number : i64 : 64;
+    builder_idx : u64 : 40;
+}
+}
+
+namespace osm_ext {
+archive Ext
+{
+    @explicit_reference( .osm_ext.ExtHeader.builder_idx, .osm_ext.Ext.stringtable )
+    header : .osm_ext.ExtHeader;
+}
+}
+

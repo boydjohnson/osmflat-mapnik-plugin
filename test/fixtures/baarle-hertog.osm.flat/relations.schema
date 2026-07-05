@@ -1,0 +1,20 @@
+namespace osm {
+struct Relation
+{
+    @range( tags )
+    tag_first_idx : u64 : 40;
+    min_lon : i32 : 32;
+    min_lat : i32 : 32;
+    max_lon : i32 : 32;
+    max_lat : i32 : 32;
+}
+}
+
+namespace osm {
+archive Osm
+{
+    @explicit_reference( .osm.Relation.tag_first_idx, .osm.Osm.tags_index )
+    relations : vector< .osm.Relation >;
+}
+}
+

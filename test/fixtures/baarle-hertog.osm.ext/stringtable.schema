@@ -1,0 +1,7 @@
+namespace osm_ext {
+archive Ext
+{
+    stringtable : raw_data;
+}
+}
+
