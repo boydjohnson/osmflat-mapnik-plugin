@@ -11,6 +11,26 @@
 
 namespace osmflat {
 
+namespace {
+
+// Naming/classifying tags always fetched for the correlation dump, regardless
+// of what the active style references via `[tag]` expressions — a style that
+// only filters on `[highway]` would otherwise never pull `name`/`ref`, and the
+// dump would have no way to name "Hennepin Ave" for a downstream tool.
+const std::vector<std::string>& correlation_tags()
+{
+    static const std::vector<std::string> tags = {
+        "name", "name:en", "alt_name", "official_name", "loc_name",
+        "ref", "int_ref", "loc_ref",
+        "highway", "waterway", "railway", "boundary", "admin_level",
+        "landuse", "natural", "leisure", "building", "place",
+        "amenity", "shop", "man_made", "bridge", "tunnel", "layer", "oneway",
+    };
+    return tags;
+}
+
+} // namespace
+
 const std::string osmflat_datasource::name_ = "osmflat";
 
 osmflat_datasource::osmflat_datasource(mapnik::parameters const& params)
@@ -137,6 +157,15 @@ void osmflat_datasource::init(mapnik::parameters const& params)
         simplify_px_ = *simplify;
     }
 
+    // `dump`: optional path for the correlation dump (NDJSON of GeoJSON
+    // Features carrying osm_id/tags/raw geometry) used by offline
+    // post-processing to map rendered SVG paths back to OSM identity. Opens in
+    // append mode; callers clear the file themselves before a fresh render.
+    std::optional<std::string> dump = params.get<std::string>("dump");
+    if (dump) {
+        dump_ = std::make_shared<dump_sink>(*dump);
+    }
+
     // Synthetic attributes always available; tag attributes are dynamic
     // (query-driven) and so are not advertised here.
     desc_.add_descriptor(mapnik::attribute_descriptor("osm_id", mapnik::Integer));
@@ -224,6 +253,20 @@ mapnik::featureset_ptr osmflat_datasource::features(mapnik::query const& q) cons
     mapnik::box2d<double> const& bbox = q.get_bbox();
 
     std::vector<std::string> keys = requested_keys(q);
+    std::size_t style_key_count = keys.size();
+
+    // With a dump active, widen the fetched keys with the correlation
+    // allowlist (skipping any already style-requested) so the dump gets
+    // naming/classifying tags the style itself never asked for.
+    if (dump_) {
+        std::set<std::string> present(keys.begin(), keys.end());
+        for (auto const& tag : correlation_tags()) {
+            if (present.insert(tag).second) {
+                keys.push_back(tag);
+            }
+        }
+    }
+
     std::vector<OsmflatStrRef> refs = key_refs(keys);
     std::vector<OsmflatKvRef> filters = filter_refs(tag_filters_);
     std::vector<OsmflatKvRef> member_filters = filter_refs(member_of_filters_);
@@ -246,7 +289,8 @@ mapnik::featureset_ptr osmflat_datasource::features(mapnik::query const& q) cons
         kinds_.nodes, kinds_.ways, kinds_.relations, refs, filters, member_filters,
         order_, tol);
 
-    return std::make_shared<osmflat_featureset>(std::move(fs), std::move(keys), numeric_keys_);
+    return std::make_shared<osmflat_featureset>(
+        std::move(fs), std::move(keys), style_key_count, numeric_keys_, dump_);
 }
 
 mapnik::featureset_ptr osmflat_datasource::features_at_point(mapnik::coord2d const& pt, double tol) const
@@ -262,7 +306,10 @@ mapnik::featureset_ptr osmflat_datasource::features_at_point(mapnik::coord2d con
         kinds_.nodes, kinds_.ways, kinds_.relations, refs, filters, member_filters,
         order_, 0.0);   // no simplification for point queries
 
-    return std::make_shared<osmflat_featureset>(std::move(fs), std::move(keys), numeric_keys_);
+    // Interactive point lookups never write to the correlation dump — it
+    // exists to correlate a bulk render's SVG output, not ad hoc queries.
+    return std::make_shared<osmflat_featureset>(
+        std::move(fs), std::move(keys), 0, numeric_keys_, nullptr);
 }
 
 } // namespace osmflat

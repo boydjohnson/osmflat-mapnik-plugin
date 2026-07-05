@@ -52,6 +52,7 @@ include path is added automatically via `brew --prefix`.
 | `numeric`  | no       | comma-separated keys | expose these tags as numbers so `[lanes] > 2` compares numerically |
 | `order`    | no       | `z_order`\|`way_area`\|`none` | draw order of returned features (default spatial); `z_order` for roads, `way_area` (desc) for areas |
 | `simplify` | no       | pixels (float, default `0.5`) | scale-aware Douglas–Peucker tolerance; geometry generalized to sub-pixel per zoom. `0` disables |
+| `dump`     | no       | path                | append-mode NDJSON correlation dump; see below |
 
 The datasource is **semantically neutral**: nodes → points, ways → line strings
 (open *and* closed alike — no area heuristics). The style decides fill vs. stroke
@@ -157,3 +158,38 @@ visually lossless and reduces the vertex count mapnik rasterizes, but note it ru
 *after* materialization, so it doesn't cut the wide-zoom bottleneck (materializing
 the pushed-down features) — tightening `tags` is the lever for that. `way_area` is
 computed from full-resolution geometry, before simplification.
+
+### Correlation dump (`dump`)
+
+Mapnik's SVG output has no per-feature identity — it's flattened to bare
+`<path>`/`<text>` elements, so a downstream tool can't tell which path is
+"Hennepin Ave" versus an anonymous fragment. `dump=<path>` has the datasource
+append one NDJSON line per emitted feature to that path, each line a GeoJSON
+`Feature` carrying exactly what was handed to mapnik *before* projection,
+clipping, or symbolizing touched it:
+
+```json
+{"type":"Feature","properties":{"osm_type":"way","osm_id":493358990,"z_order":70,"way_area":0,"is_closed":false,"highway":"primary","name":"Carretera México - Cuernavaca (Libre)","ref":"MEX 95","oneway":"no"},"geometry":{"type":"LineString","coordinates":[[-99.1649325,19.1995016],[-99.1615194,19.2015559]]}}
+```
+
+Geometry is raw `EPSG:4326` (lon/lat), matching the datasource's declared SRS —
+an offline post-processor reprojects and affine-transforms it into the same
+space as the rendered SVG to match dumped features back to output paths
+(bbox-clipping can still split one feature into several path fragments; this
+dump is what lets those be reassembled by identity instead of guessed at
+geometrically).
+
+Properties are wider than the style's own attributes: alongside whatever tags
+the active style references, every feature also carries a fixed
+naming/classifying allowlist (`name`, `ref`, `highway`, `waterway`, `railway`,
+`admin_level`, `building`, …) regardless of whether any rule filters on them —
+otherwise a style that only ever writes `[highway] = 'primary'` would never
+pull `name`, and the dump would have nothing to call the road. This widened
+fetch only feeds the dump; it does not change the mapnik attribute schema the
+style sees.
+
+The file is opened in append mode, so multiple `<Layer>`s (or multiple queries
+against one layer) can all point `dump` at the same path without truncating
+each other — clear the file yourself before a fresh render run. Point queries
+(`features_at_point`, interactive lookups) never write to the dump; it's meant
+to correlate one bulk render, not ad hoc queries.

@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "osmflat_archive.hpp"
+#include "osmflat_dump_sink.hpp"
 
 namespace osmflat {
 
@@ -73,6 +74,12 @@ private:
     double simplify_px_ = 0.5;
 
     std::shared_ptr<archive> archive_;
+
+    // Correlation dump from the `dump` param (nullptr when unset). When set,
+    // `features()` widens the fetched tag keys with a fixed naming/classifying
+    // allowlist beyond what the active style references, so the dump carries
+    // useful identity even for rules that only filter on e.g. `[highway]`.
+    std::shared_ptr<dump_sink> dump_;
 };
 
 } // namespace osmflat

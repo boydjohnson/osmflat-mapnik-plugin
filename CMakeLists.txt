@@ -47,6 +47,7 @@ endif()
 add_library(osmflat_input MODULE
     src/osmflat_datasource.cpp
     src/osmflat_featureset.cpp
+    src/osmflat_dump_sink.cpp
 )
 
 # Mapnik loads plugins by the bare name `osmflat.input` (no `lib` prefix).
