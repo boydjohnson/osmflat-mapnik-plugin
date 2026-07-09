@@ -20,8 +20,9 @@ use std::os::raw::c_char;
 use std::slice;
 
 use osmflat::{
-    find_nodes_by_bounding_box, find_relations_by_bounding_box, find_tag, find_ways_by_bounding_box,
-    node_id, relation_id, way_id, FileResourceStorage, Node, Osm, Relation, RelationMembersRef, Way,
+    find_nodes_by_bounding_box, find_relations_by_bounding_box, find_tag,
+    find_ways_by_bounding_box, node_id, relation_id, way_id, FileResourceStorage, Node, Osm,
+    Relation, RelationMembersRef, Way,
 };
 use osmflat_ext::query::Bbox;
 use osmflat_ext::taginfo::TaginfoQuery;
@@ -419,7 +420,14 @@ pub unsafe extern "C" fn osmflat_query(
         if include_ways {
             match candidate_indices(handle, &filter_refs, bbox, Prim::Way) {
                 Some(indices) => features.extend(indices.into_iter().filter_map(|i| {
-                    materialize_way(archive, i as usize, scale, simplify_tolerance, &key_refs, None)
+                    materialize_way(
+                        archive,
+                        i as usize,
+                        scale,
+                        simplify_tolerance,
+                        &key_refs,
+                        None,
+                    )
                 })),
                 None => {
                     let base = archive.ways().as_ptr();
@@ -466,9 +474,11 @@ pub unsafe extern "C" fn osmflat_query(
     // Apply the requested draw order (mapnik renders in the returned order).
     match order {
         OsmflatOrder::ZOrder => features.sort_by_key(|f| f.z_order),
-        OsmflatOrder::WayArea => {
-            features.sort_by(|a, b| b.way_area.partial_cmp(&a.way_area).unwrap_or(std::cmp::Ordering::Equal))
-        }
+        OsmflatOrder::WayArea => features.sort_by(|a, b| {
+            b.way_area
+                .partial_cmp(&a.way_area)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        }),
         OsmflatOrder::None => {}
     }
 
@@ -569,10 +579,7 @@ fn intersect_sorted_u64(a: &[u64], b: &[u64]) -> Vec<u64> {
 /// loaded; otherwise falls back to a full relation scan with `find_tag`, so the
 /// filter is enforced either way — a style cannot re-express relation
 /// membership itself, unlike a tag filter.
-fn relations_matching_all(
-    handle: &OsmflatArchive,
-    filters: &[(&[u8], Option<&[u8]>)],
-) -> Vec<u64> {
+fn relations_matching_all(handle: &OsmflatArchive, filters: &[(&[u8], Option<&[u8]>)]) -> Vec<u64> {
     if filters.is_empty() {
         return Vec::new();
     }
@@ -845,7 +852,11 @@ fn materialize_way(
         && nodes_index[begin].value().is_some()
         && nodes_index[begin].value() == nodes_index[end - 1].value();
     // way_area is computed from the full-resolution ring, before simplification.
-    let way_area = if is_closed { ring_area_m2(&coords) } else { 0.0 };
+    let way_area = if is_closed {
+        ring_area_m2(&coords)
+    } else {
+        0.0
+    };
     let coords = simplify_coords(&coords, tol, if is_closed { 4 } else { 2 });
 
     Some(OwnedFeature {
@@ -1008,11 +1019,21 @@ fn assemble_rings_and_open_chains(mut segments: Vec<Vec<(f64, f64)>>) -> Assembl
                 break;
             }
             let end = *ring.last().unwrap();
-            // Find a remaining segment whose near end is close to this open endpoint.
-            let next = segments.iter().position(|s| {
-                dist_m(*s.first().unwrap(), end) < RING_SNAP_TOLERANCE_M
-                    || dist_m(*s.last().unwrap(), end) < RING_SNAP_TOLERANCE_M
-            });
+            // Find the remaining segment whose near end is closest to this open
+            // endpoint (not merely the first one within tolerance): distinct
+            // rings that pass close to each other (e.g. the main shoreline and a
+            // separate ring around a harbor mouth) can each have an endpoint
+            // within RING_SNAP_TOLERANCE_M, and picking the first match in list
+            // order risks splicing the wrong ring in.
+            let next = segments
+                .iter()
+                .enumerate()
+                .filter_map(|(i, s)| {
+                    let d = dist_m(*s.first().unwrap(), end).min(dist_m(*s.last().unwrap(), end));
+                    (d < RING_SNAP_TOLERANCE_M).then_some((i, d))
+                })
+                .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+                .map(|(i, _)| i);
             match next {
                 Some(i) => {
                     let mut seg = segments.remove(i);
@@ -1062,6 +1083,45 @@ mod tests {
 
         assert_eq!(assembled.rings.len(), 1);
         assert!(assembled.open_chains.is_empty());
+    }
+
+    /// Reproduces the Lake Michigan multipolygon bug: when two distinct
+    /// rings pass near each other (e.g. the main shoreline ring and a
+    /// separate small ring around a harbor/river mouth), a decoy segment
+    /// from the *other* ring can be within `RING_SNAP_TOLERANCE_M` of the
+    /// open end being stitched. The assembler must splice in the *nearest*
+    /// matching segment, not merely the first one it happens to encounter in
+    /// list order — otherwise it stitches the wrong ring in, producing a
+    /// self-intersecting polygon with a long spurious "shortcut" edge
+    /// instead of the correct closed ring.
+    #[test]
+    fn ring_assembler_picks_nearest_endpoint_not_first_in_list() {
+        // Decoy segment belonging to an unrelated ring, placed first in the
+        // segment list. Its start point is within RING_SNAP_TOLERANCE_M of
+        // the open ring's end (~223m), but farther away than the true
+        // continuation below.
+        let seg_wrong = vec![(10.002, 0.0), (20.0, 0.0)];
+        // True continuation of the ring being assembled: closer to the open
+        // end (~111m) than seg_wrong, but placed after it in the list.
+        let seg_correct = vec![(10.001, 0.0), (10.0, 1.0), (0.0, 0.0)];
+        let seg_start = vec![(0.0, 0.0), (10.0, 0.0)];
+
+        let segments = vec![seg_wrong, seg_correct, seg_start];
+
+        let assembled = assemble_rings_and_open_chains(segments);
+
+        assert_eq!(
+            assembled.rings,
+            vec![vec![(0.0, 0.0), (10.0, 0.0), (10.0, 1.0), (0.0, 0.0)]],
+            "assembler should splice in the nearer segment (seg_correct), not \
+             the first-in-list-order segment (seg_wrong), to produce a closed \
+             ring"
+        );
+        assert_eq!(
+            assembled.open_chains.len(),
+            1,
+            "the decoy segment should be left over as its own open chain"
+        );
     }
 
     #[test]
@@ -1217,7 +1277,10 @@ mod tests {
 
         assert_eq!(node_pairs.len(), 1);
         assert_eq!(way_pairs.len(), 2); // duplicate way deduped, relation member dropped
-        assert!(node_pairs.iter().chain(&way_pairs).all(|&(_, r)| r == train));
+        assert!(node_pairs
+            .iter()
+            .chain(&way_pairs)
+            .all(|&(_, r)| r == train));
         assert!(way_pairs[0].0 < way_pairs[1].0); // ascending (spatial) order
 
         // want_* gates each list independently.
@@ -1241,9 +1304,15 @@ mod tests {
             b"rel_ref".as_slice(),
             b"rel_route".as_slice(),
         ];
-        let feat =
-            materialize_way(archive, w as usize, handle.coord_scale, 0.0, &keys, Some(&rel_tags))
-                .unwrap();
+        let feat = materialize_way(
+            archive,
+            w as usize,
+            handle.coord_scale,
+            0.0,
+            &keys,
+            Some(&rel_tags),
+        )
+        .unwrap();
 
         assert_eq!(feat.attrs[0].as_deref(), Some(b"rail".as_slice())); // own tag
         assert_eq!(feat.attrs[1], None); // the way itself has no `ref`
@@ -1251,8 +1320,8 @@ mod tests {
         assert_eq!(feat.attrs[3].as_deref(), Some(b"train".as_slice()));
 
         // Without a parent relation, `rel_*` is just a literal (absent) tag.
-        let plain = materialize_way(archive, w as usize, handle.coord_scale, 0.0, &keys, None)
-            .unwrap();
+        let plain =
+            materialize_way(archive, w as usize, handle.coord_scale, 0.0, &keys, None).unwrap();
         assert_eq!(plain.attrs[2], None);
     }
 }
