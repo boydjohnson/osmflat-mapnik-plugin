@@ -92,6 +92,29 @@ static std::vector<std::pair<std::string, std::string>> parse_tag_filters(std::s
     return out;
 }
 
+// Parses a comma-separated list of plain tokens (no key=value structure),
+// trimming whitespace around each. Used for `name_lang`.
+static std::vector<std::string> parse_csv_tokens(std::string const& spec)
+{
+    auto trim = [](std::string s) {
+        s.erase(0, s.find_first_not_of(" \t"));
+        auto e = s.find_last_not_of(" \t");
+        return e == std::string::npos ? std::string() : s.substr(0, e + 1);
+    };
+    std::vector<std::string> out;
+    std::size_t start = 0;
+    while (start <= spec.size()) {
+        std::size_t comma = spec.find(',', start);
+        std::string tok = trim(spec.substr(start, comma == std::string::npos ? std::string::npos : comma - start));
+        if (!tok.empty()) {
+            out.push_back(std::move(tok));
+        }
+        if (comma == std::string::npos) { break; }
+        start = comma + 1;
+    }
+    return out;
+}
+
 void osmflat_datasource::init(mapnik::parameters const& params)
 {
     std::optional<std::string> file = params.get<std::string>("file");
@@ -136,6 +159,15 @@ void osmflat_datasource::init(mapnik::parameters const& params)
         for (auto const& kv : parse_tag_filters(*numeric)) {
             numeric_keys_.insert(kv.first);   // reuse the CSV/key parser
         }
+    }
+
+    // `name_lang`: comma-separated language preference for the `name`
+    // attribute, e.g. "fr,nl" or "fr,_" (try French, then Dutch/literal
+    // fallback). Resolved per-feature in the featureset from tags fetched
+    // alongside the style-requested keys; see features() below.
+    std::optional<std::string> name_lang = params.get<std::string>("name_lang");
+    if (name_lang) {
+        name_langs_ = parse_csv_tokens(*name_lang);
     }
 
     // `order`: draw order applied to returned features (default spatial).
@@ -255,6 +287,25 @@ mapnik::featureset_ptr osmflat_datasource::features(mapnik::query const& q) cons
     std::vector<std::string> keys = requested_keys(q);
     std::size_t style_key_count = keys.size();
 
+    // Language resolution: if the style references [name] and `name_lang` is
+    // configured, fetch each candidate "name:<lang>" tag past style_key_count_
+    // (never exposed to the mapnik attribute schema) so the featureset can
+    // pick the first present one, in priority order. "_" means the plain
+    // `name` tag, which is already fetched as a style key above, so it's
+    // skipped here. `active_name_langs` stays empty (and the featureset skips
+    // language resolution entirely) unless both conditions hold, so a
+    // `name_lang` param configured for a style that never references [name]
+    // is a no-op rather than an out-of-bounds risk.
+    std::vector<std::string> active_name_langs;
+    if (!name_langs_.empty()
+        && std::find(keys.begin(), keys.begin() + style_key_count, "name") != keys.begin() + style_key_count) {
+        active_name_langs = name_langs_;
+        for (auto const& lang : name_langs_) {
+            if (lang == "_") { continue; }
+            keys.push_back("name:" + lang);
+        }
+    }
+
     // With a dump active, widen the fetched keys with the correlation
     // allowlist (skipping any already style-requested) so the dump gets
     // naming/classifying tags the style itself never asked for.
@@ -290,7 +341,7 @@ mapnik::featureset_ptr osmflat_datasource::features(mapnik::query const& q) cons
         order_, tol);
 
     return std::make_shared<osmflat_featureset>(
-        std::move(fs), std::move(keys), style_key_count, numeric_keys_, dump_);
+        std::move(fs), std::move(keys), style_key_count, std::move(active_name_langs), numeric_keys_, dump_);
 }
 
 mapnik::featureset_ptr osmflat_datasource::features_at_point(mapnik::coord2d const& pt, double tol) const
@@ -309,7 +360,7 @@ mapnik::featureset_ptr osmflat_datasource::features_at_point(mapnik::coord2d con
     // Interactive point lookups never write to the correlation dump — it
     // exists to correlate a bulk render's SVG output, not ad hoc queries.
     return std::make_shared<osmflat_featureset>(
-        std::move(fs), std::move(keys), 0, numeric_keys_, nullptr);
+        std::move(fs), std::move(keys), 0, std::vector<std::string>{}, numeric_keys_, nullptr);
 }
 
 } // namespace osmflat

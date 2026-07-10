@@ -66,6 +66,12 @@ private:
     // Tag keys from the `numeric` param to coerce to numeric attributes.
     std::set<std::string> numeric_keys_;
 
+    // Language preference from the `name_lang` param: an ordered list of
+    // codes to try as "name:<code>" before falling back to the plain "name"
+    // tag; "_" in the list means the plain "name" tag itself. Empty means no
+    // substitution -- `name` resolves to the literal tag, as before.
+    std::vector<std::string> name_langs_;
+
     // Draw order from the `order` param (default None = spatial order).
     OsmflatOrder order_ = OsmflatOrder::OsmflatOrder_None;
 

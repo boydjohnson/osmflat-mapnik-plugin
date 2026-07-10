@@ -51,9 +51,11 @@ void put_numeric(mapnik::feature_ptr const& feature, std::string const& key, std
 
 osmflat_featureset::osmflat_featureset(feature_set&& fs, std::vector<std::string> keys,
                                        std::size_t style_key_count,
+                                       std::vector<std::string> name_langs,
                                        std::set<std::string> numeric_keys,
                                        std::shared_ptr<dump_sink> dump)
     : fs_(std::move(fs)), keys_(std::move(keys)), style_key_count_(style_key_count),
+      name_langs_(std::move(name_langs)),
       numeric_keys_(std::move(numeric_keys)), dump_(std::move(dump))
 {
     // Fixed schema shared by every feature in this query. Only the
@@ -139,6 +141,8 @@ mapnik::feature_ptr osmflat_featureset::next()
     // numerically (e.g. [lanes] > 2). Only the style-requested prefix becomes
     // a mapnik attribute; any dump-only keys are read separately below.
     std::string value;
+    std::string plain_name;
+    bool have_plain_name = false;
     for (std::size_t i = 0; i < style_key_count_; ++i) {
         if (!fs_.attr(i, value)) {
             feature->put(keys_[i], mapnik::value_null());
@@ -146,6 +150,43 @@ mapnik::feature_ptr osmflat_featureset::next()
             put_numeric(feature, keys_[i], value);
         } else {
             feature->put(keys_[i], mapnik::value_unicode_string::fromUTF8(value));
+            if (keys_[i] == "name") {
+                plain_name = value;
+                have_plain_name = !value.empty();
+            }
+        }
+    }
+
+    // Language resolution (only active when the style requested [name] *and*
+    // `name_lang` was configured -- see osmflat_datasource::features(), which
+    // leaves name_langs_ empty otherwise). Walk the requested languages in
+    // priority order: "_" checks the plain tag already put above; anything
+    // else checks the matching "name:<lang>" candidate osmflat_datasource
+    // appended at keys_[style_key_count_, ...), in the same relative order as
+    // the non-"_" entries in name_langs_. The first non-empty hit wins. If
+    // nothing matches, "name" resolves to null -- mirroring an unmatched SQL
+    // `coalesce(...)` -- rather than silently keeping the plain tag.
+    if (!name_langs_.empty()) {
+        bool resolved = false;
+        std::size_t candidate = style_key_count_;
+        for (std::string const& lang : name_langs_) {
+            if (lang == "_") {
+                if (have_plain_name) {
+                    feature->put("name", mapnik::value_unicode_string::fromUTF8(plain_name));
+                    resolved = true;
+                    break;
+                }
+                continue;
+            }
+            if (fs_.attr(candidate, value) && !value.empty()) {
+                feature->put("name", mapnik::value_unicode_string::fromUTF8(value));
+                resolved = true;
+                break;
+            }
+            ++candidate;
+        }
+        if (!resolved) {
+            feature->put("name", mapnik::value_null());
         }
     }
 

@@ -34,7 +34,8 @@ class osmflat_featureset : public mapnik::Featureset
 {
 public:
     osmflat_featureset(feature_set&& fs, std::vector<std::string> keys,
-                       std::size_t style_key_count, std::set<std::string> numeric_keys,
+                       std::size_t style_key_count, std::vector<std::string> name_langs,
+                       std::set<std::string> numeric_keys,
                        std::shared_ptr<dump_sink> dump);
     mapnik::feature_ptr next() override;
 
@@ -42,6 +43,21 @@ private:
     feature_set fs_;
     std::vector<std::string> keys_;   // requested tag names, aligned to attr(i)
     std::size_t style_key_count_;     // keys_[0, style_key_count_) go on the mapnik feature
+
+    // Language preference, in priority order; empty unless the style
+    // requested [name] *and* the datasource's `name_lang` param was set (see
+    // osmflat_datasource::features()) -- otherwise this stays empty and
+    // "name" resolution is left untouched, same as before this feature
+    // existed. A non-"_" token N corresponds, in order, to one of the
+    // "name:<lang>" keys osmflat_datasource appended at
+    // keys_[style_key_count_, ...); "_" means the plain "name" tag (already
+    // fetched as a style key) rather than a fetched candidate. Mirrors
+    // mod_tile's `coalesce(tags->'name:<lang>', ..., name)` PostGIS rewrite:
+    // the first token (in order) with a non-empty value wins, and if no
+    // token matches, "name" resolves to null -- exactly like an unmatched
+    // SQL coalesce -- rather than silently keeping the plain tag. Callers
+    // that want a guaranteed fallback append "_" as the last token.
+    std::vector<std::string> name_langs_;
     std::set<std::string> numeric_keys_;  // subset of keys_ to coerce to numbers
     mapnik::context_ptr ctx_;
     mapnik::value_integer feature_id_ = 0;   // mapnik FID (unique within query)

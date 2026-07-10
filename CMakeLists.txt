@@ -99,4 +99,11 @@ if(BUILD_RENDER_TEST)
     target_include_directories(check_member_of PRIVATE ${HOMEBREW_PREFIX}/include)
     target_link_libraries(check_member_of PRIVATE PkgConfig::MAPNIK)
     add_dependencies(check_member_of osmflat_input)
+
+    # Drives the osmflat plugin's `name_lang` param directly and checks
+    # resolved "name" values against the fixture's own name:<lang> tags.
+    add_executable(check_name_lang test/check_name_lang.cpp)
+    target_include_directories(check_name_lang PRIVATE ${HOMEBREW_PREFIX}/include)
+    target_link_libraries(check_name_lang PRIVATE PkgConfig::MAPNIK)
+    add_dependencies(check_name_lang osmflat_input)
 endif()
