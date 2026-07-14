@@ -72,6 +72,11 @@ target_link_libraries(osmflat_input PRIVATE
 
 target_compile_options(osmflat_input PRIVATE -Wall -Wextra)
 
+# Enables mapnik's MAPNIK_LOG_DEBUG/_WARN/_ERROR machinery (a no-op otherwise,
+# per mapnik/debug.hpp) so per-query diagnostics are gated by the normal
+# mapnik::logger severity instead of always-on or compiled away.
+target_compile_definitions(osmflat_input PRIVATE MAPNIK_LOG)
+
 # Place the built plugin where it's easy to point MAPNIK_PLUGINDIR at.
 set_target_properties(osmflat_input PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/plugins

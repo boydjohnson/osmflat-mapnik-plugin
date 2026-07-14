@@ -37,10 +37,12 @@ public:
                        std::size_t style_key_count, std::vector<std::string> name_langs,
                        std::set<std::string> numeric_keys,
                        std::shared_ptr<dump_sink> dump);
+    ~osmflat_featureset() override;
     mapnik::feature_ptr next() override;
 
 private:
     feature_set fs_;
+    std::size_t emitted_ = 0;   // features actually returned via next(); logged on close
     std::vector<std::string> keys_;   // requested tag names, aligned to attr(i)
     std::size_t style_key_count_;     // keys_[0, style_key_count_) go on the mapnik feature
 

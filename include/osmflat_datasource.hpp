@@ -75,6 +75,13 @@ private:
     // Draw order from the `order` param (default None = spatial order).
     OsmflatOrder order_ = OsmflatOrder::OsmflatOrder_None;
 
+    // Precomputed once in init() for the per-query MAPNIK_LOG_DEBUG line in
+    // features() -- the params don't change per query, so there's no reason
+    // to re-stringify tag_filters_/member_of_filters_/kinds_ on every call.
+    std::string log_kinds_;
+    std::string log_tags_;
+    std::string log_member_of_;
+
     // Simplification tolerance in pixels (the `simplify` param); 0 disables.
     // Converted to map units per query from the query resolution.
     double simplify_px_ = 0.5;

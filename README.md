@@ -287,3 +287,53 @@ against one layer) can all point `dump` at the same path without truncating
 each other — clear the file yourself before a fresh render run. Point queries
 (`features_at_point`, interactive lookups) never write to the dump; it's meant
 to correlate one bulk render, not ad hoc queries.
+
+### Debug logging
+
+The plugin logs one line per query through mapnik's own `MAPNIK_LOG_DEBUG`
+machinery — off by default (compiled to a genuine no-op unless `MAPNIK_LOG` is
+defined, which this plugin's `CMakeLists.txt` does) and gated at runtime by
+the usual `mapnik::logger` severity, same as every other mapnik plugin's debug
+output. Two lines per query, from `osmflat_datasource::features()` /
+`features_at_point()` and from `osmflat_featureset`'s destructor:
+
+```
+osmflat: query bbox=[-73.9,40.7575,-73.84,40.8025] osm_type=way tags=natural=bay member_of=- order=none simplify_px=0.5 style_keys=1
+osmflat: featureset closed, emitted=3 features
+```
+
+The first line is everything the query asked for (bbox, `osm_type`, `tags`,
+`member_of`, `order`, `simplify`, how many style keys were requested); the
+second is how many features the returned cursor actually yielded, logged when
+mapnik is done with it — whether it drained the cursor to exhaustion or
+stopped early. Useful for confirming a `tags`/`member_of` filter is actually
+selecting what you think it is, or for noticing that a layer you expected to
+be empty (or non-empty) isn't, without adding throwaway `[osm_id]` text rules
+to a style just to see what came back.
+
+To turn it on, the *caller* still has to raise mapnik's log severity — this
+plugin only emits at debug level, it doesn't change the global severity
+itself. `test/render.cpp` (the smoke-test renderer, and what `scripts/render.sh`
+in the styles repo shells out to) does this when `OSMFLAT_LOG_DEBUG` is set:
+
+```
+OSMFLAT_LOG_DEBUG=1 render.sh style.xml out.png <bbox...>
+```
+
+Other hosts (e.g. `mapnik-config`-based mod_tile setups, or your own harness)
+can do the same with `mapnik::logger::set_severity(mapnik::logger::debug)`
+before rendering.
+
+Separately, `osmflat-capi`'s relation assembly (`assemble_multipolygon`) prints
+a raw `eprintln!` — not routed through `MAPNIK_LOG` at all — when a relation's
+outer ways don't form a closed ring and it has to drop the relation entirely:
+
+```
+osmflat-mapnik-plugin: dropping relation id=Some(15624542) name="": outer ways don't form a closed ring
+```
+
+This is real signal (a relation that should have area got silently dropped)
+but it's easy to miss since it's unconditional Rust-side stderr output, not
+gated by severity like the C++ side's logging. Worth promoting to a proper
+`MAPNIK_LOG_WARN` through the C API at some point rather than a bare
+`eprintln!`.

@@ -1,5 +1,6 @@
 #include "osmflat_featureset.hpp"
 
+#include <mapnik/debug.hpp>
 #include <mapnik/feature_factory.hpp>
 #include <mapnik/geometry.hpp>
 #include <mapnik/value/types.hpp>
@@ -72,11 +73,22 @@ osmflat_featureset::osmflat_featureset(feature_set&& fs, std::vector<std::string
     }
 }
 
+// Logs how many features this query's cursor actually yielded, regardless of
+// whether the caller (mapnik's rendering loop) drained it to exhaustion or
+// stopped early -- pairs with the "osmflat: query ..." line features() logs
+// when the query started, so a debug session sees both the ask and the
+// answer for every layer touched during a render.
+osmflat_featureset::~osmflat_featureset()
+{
+    MAPNIK_LOG_DEBUG(osmflat) << "osmflat: featureset closed, emitted=" << emitted_ << " features";
+}
+
 mapnik::feature_ptr osmflat_featureset::next()
 {
     if (!fs_.next()) {
         return mapnik::feature_ptr();
     }
+    ++emitted_;
 
     mapnik::feature_ptr feature = mapnik::feature_factory::create(ctx_, ++feature_id_);
 
