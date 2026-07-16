@@ -17,6 +17,7 @@
 
 #include "osmflat_archive.hpp"
 #include "osmflat_dump_sink.hpp"
+#include "osmflat_group_hierarchy.hpp"
 
 namespace osmflat {
 
@@ -93,6 +94,14 @@ private:
     // allowlist beyond what the active style references, so the dump carries
     // useful identity even for rules that only filter on e.g. `[highway]`.
     std::shared_ptr<dump_sink> dump_;
+
+    // Compiled rules from the `group_hierarchy` param (nullptr when unset;
+    // shared_ptr so it can be handed to each query's featureset without
+    // copying the compiled expressions). Only meaningful alongside `dump_`:
+    // the resolved group path/rank is dump-only, never exposed as a live
+    // mapnik feature attribute, since nothing at render time needs it --
+    // only the offline SVG post-processor does.
+    std::shared_ptr<std::vector<group_rule>> group_rules_;
 };
 
 } // namespace osmflat

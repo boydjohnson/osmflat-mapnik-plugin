@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Default `group_hierarchy` rule file for the osmflat datasource's
+  `group_hierarchy=<path>` param. Resolves each feature's designer-facing
+  group nesting for mapnik-svg-processor's `serialize` step (nested
+  `<g id="...">` wrappers), reproducing the 9 categories that used to be a
+  hardcoded Rust `LayerKind` enum, plus a `transportation/public-transit`
+  split by railway subtype.
+
+  IMPORTANT, read before editing:
+  - Rules are tried top-to-bottom; the FIRST matching Rule wins.
+  - Row order here is not just match priority, it is the actual draw
+    z-order downstream (background-to-foreground). Reordering rows changes
+    what's on top, not just which rule wins a tag conflict.
+  - Rules sharing a path prefix (e.g. all three
+    "transportation/public-transit/*" rows) MUST stay contiguous, or the SVG
+    post-processor will end up emitting the same parent group twice,
+    an invalid, duplicate-id document. Keep every family of rules under one
+    path prefix grouped together.
+-->
+<GroupHierarchy>
+  <Rule path="water">
+    <Filter>[natural]='water' or [waterway]!=''</Filter>
+  </Rule>
+  <Rule path="landuse">
+    <Filter>[landuse]!='' or [natural]!=''</Filter>
+  </Rule>
+  <Rule path="parks">
+    <Filter>[leisure]='park' or [landuse]='recreation_ground'</Filter>
+  </Rule>
+  <Rule path="buildings">
+    <Filter>[building]!=''</Filter>
+  </Rule>
+  <Rule path="boundaries">
+    <Filter>[boundary]!='' or [admin_level]!=''</Filter>
+  </Rule>
+  <Rule path="transportation/public-transit/light-rail">
+    <Filter>[railway]='light_rail'</Filter>
+  </Rule>
+  <Rule path="transportation/public-transit/subway">
+    <Filter>[railway]='subway'</Filter>
+  </Rule>
+  <Rule path="transportation/public-transit/tram">
+    <Filter>[railway]='tram'</Filter>
+  </Rule>
+  <Rule path="transportation/rail">
+    <Filter>[railway]!=''</Filter>
+  </Rule>
+  <Rule path="transportation/roads">
+    <Filter>[highway]!=''</Filter>
+  </Rule>
+  <Rule path="pois">
+    <Filter>[amenity]!='' or [shop]!=''</Filter>
+  </Rule>
+</GroupHierarchy>

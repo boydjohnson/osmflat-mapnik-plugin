@@ -48,6 +48,7 @@ add_library(osmflat_input MODULE
     src/osmflat_datasource.cpp
     src/osmflat_featureset.cpp
     src/osmflat_dump_sink.cpp
+    src/osmflat_group_hierarchy.cpp
 )
 
 # Mapnik loads plugins by the bare name `osmflat.input` (no `lib` prefix).
@@ -111,4 +112,15 @@ if(BUILD_RENDER_TEST)
     target_include_directories(check_name_lang PRIVATE ${HOMEBREW_PREFIX}/include)
     target_link_libraries(check_name_lang PRIVATE PkgConfig::MAPNIK)
     add_dependencies(check_name_lang osmflat_input)
+
+    # Unit-tests the `group_hierarchy` rule engine in isolation (synthetic
+    # features, no archive/bbox needed) -- compiles the module's source
+    # directly rather than loading the plugin, since it's exercising
+    # osmflat_group_hierarchy.cpp's own functions, not the datasource.
+    add_executable(check_group_hierarchy test/check_group_hierarchy.cpp src/osmflat_group_hierarchy.cpp)
+    target_include_directories(check_group_hierarchy PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${HOMEBREW_PREFIX}/include
+    )
+    target_link_libraries(check_group_hierarchy PRIVATE PkgConfig::MAPNIK)
 endif()

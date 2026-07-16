@@ -32,6 +32,15 @@ struct dump_record {
     std::vector<std::vector<std::vector<std::pair<double, double>>>> polygons; // MultiPolygon
 
     std::vector<std::pair<std::string, std::string>> tags;   // present tags only
+
+    // Resolved by the datasource's `group_hierarchy` rule file (empty/absent
+    // when unset or no `<Rule>` matched): a '/'-separated hierarchy path
+    // (e.g. "transportation/public-transit/light-rail") plus the matching
+    // rule's row index in that file. The row index is the single source of
+    // truth for both match priority and draw z-order downstream, so it's
+    // always dumped alongside the path, never inferred separately.
+    std::string group_path;
+    int32_t group_rank = -1;
 };
 
 /// Appends correlation records as newline-delimited GeoJSON Features. Opens in

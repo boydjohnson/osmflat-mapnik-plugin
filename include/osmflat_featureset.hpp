@@ -5,12 +5,15 @@
 #include <mapnik/featureset.hpp>
 
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "osmflat_archive.hpp"
 #include "osmflat_dump_sink.hpp"
+#include "osmflat_group_hierarchy.hpp"
 
 namespace osmflat {
 
@@ -36,7 +39,8 @@ public:
     osmflat_featureset(feature_set&& fs, std::vector<std::string> keys,
                        std::size_t style_key_count, std::vector<std::string> name_langs,
                        std::set<std::string> numeric_keys,
-                       std::shared_ptr<dump_sink> dump);
+                       std::shared_ptr<dump_sink> dump,
+                       std::shared_ptr<std::vector<group_rule>> group_rules = nullptr);
     ~osmflat_featureset() override;
     mapnik::feature_ptr next() override;
 
@@ -65,7 +69,13 @@ private:
     mapnik::value_integer feature_id_ = 0;   // mapnik FID (unique within query)
     std::shared_ptr<dump_sink> dump_;
 
-    void write_dump_record();
+    // Compiled `group_hierarchy` rules (nullptr/empty when unset). Evaluated
+    // per-feature against the already-built mapnik feature (which by then
+    // carries every key `keys_` widened for) in `next()`, before
+    // `write_dump_record()` -- the resolved path/rank is dump-only.
+    std::shared_ptr<std::vector<group_rule>> group_rules_;
+
+    void write_dump_record(std::optional<std::pair<std::string, int32_t>> const& group);
 };
 
 } // namespace osmflat

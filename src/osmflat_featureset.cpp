@@ -54,10 +54,12 @@ osmflat_featureset::osmflat_featureset(feature_set&& fs, std::vector<std::string
                                        std::size_t style_key_count,
                                        std::vector<std::string> name_langs,
                                        std::set<std::string> numeric_keys,
-                                       std::shared_ptr<dump_sink> dump)
+                                       std::shared_ptr<dump_sink> dump,
+                                       std::shared_ptr<std::vector<group_rule>> group_rules)
     : fs_(std::move(fs)), keys_(std::move(keys)), style_key_count_(style_key_count),
       name_langs_(std::move(name_langs)),
-      numeric_keys_(std::move(numeric_keys)), dump_(std::move(dump))
+      numeric_keys_(std::move(numeric_keys)), dump_(std::move(dump)),
+      group_rules_(std::move(group_rules))
 {
     // Fixed schema shared by every feature in this query. Only the
     // style-requested keys become mapnik attributes; any dump-only keys past
@@ -203,13 +205,22 @@ mapnik::feature_ptr osmflat_featureset::next()
     }
 
     if (dump_) {
-        write_dump_record();
+        // Resolved against the feature object just built above, which by
+        // now carries every key `osmflat_datasource::features()` widened
+        // for -- including any tag a `group_hierarchy` rule's `<Filter>`
+        // references (see `referenced_attributes()`), so a rule can filter
+        // on any tag without the caller also having to list it in `tags=`.
+        std::optional<std::pair<std::string, int32_t>> group;
+        if (group_rules_ && !group_rules_->empty()) {
+            group = resolve_group(*group_rules_, *feature);
+        }
+        write_dump_record(group);
     }
 
     return feature;
 }
 
-void osmflat_featureset::write_dump_record()
+void osmflat_featureset::write_dump_record(std::optional<std::pair<std::string, int32_t>> const& group)
 {
     dump_record rec;
     rec.osm_type = osm_type_name(fs_.osm_type());
@@ -275,6 +286,11 @@ void osmflat_featureset::write_dump_record()
         if (fs_.attr(i, value)) {
             rec.tags.emplace_back(keys_[i], value);
         }
+    }
+
+    if (group) {
+        rec.group_path = group->first;
+        rec.group_rank = group->second;
     }
 
     dump_->write(rec);

@@ -233,6 +233,17 @@ void osmflat_datasource::init(mapnik::parameters const& params)
         dump_ = std::make_shared<dump_sink>(*dump);
     }
 
+    // `group_hierarchy`: optional path to a `<GroupHierarchy><Rule
+    // path="..."><Filter>...</Filter></Rule>...` XML file resolving each
+    // feature's designer-facing group nesting for the SVG post-processor
+    // (e.g. `transportation/public-transit/light-rail`). Only meaningful
+    // alongside `dump` -- resolved per-feature in `features()`/the
+    // featureset and dumped, never exposed as a live mapnik attribute.
+    std::optional<std::string> group_hierarchy = params.get<std::string>("group_hierarchy");
+    if (group_hierarchy) {
+        group_rules_ = std::make_shared<std::vector<group_rule>>(load_group_hierarchy(*group_hierarchy));
+    }
+
     // Precomputed display strings for the per-query MAPNIK_LOG_DEBUG line in
     // features() (see format_filters/format_kinds above).
     log_kinds_ = format_kinds(kinds_);
@@ -366,6 +377,16 @@ mapnik::featureset_ptr osmflat_datasource::features(mapnik::query const& q) cons
                 keys.push_back(tag);
             }
         }
+        // Same reasoning, for whatever tags the `group_hierarchy` rules'
+        // `<Filter>`s reference -- a rule can filter on any tag without the
+        // caller also having to list it in `tags=`/the style.
+        if (group_rules_) {
+            for (auto const& tag : referenced_attributes(*group_rules_)) {
+                if (present.insert(tag).second) {
+                    keys.push_back(tag);
+                }
+            }
+        }
     }
 
     std::vector<OsmflatStrRef> refs = key_refs(keys);
@@ -391,7 +412,8 @@ mapnik::featureset_ptr osmflat_datasource::features(mapnik::query const& q) cons
         order_, tol);
 
     return std::make_shared<osmflat_featureset>(
-        std::move(fs), std::move(keys), style_key_count, std::move(active_name_langs), numeric_keys_, dump_);
+        std::move(fs), std::move(keys), style_key_count, std::move(active_name_langs), numeric_keys_, dump_,
+        group_rules_);
 }
 
 mapnik::featureset_ptr osmflat_datasource::features_at_point(mapnik::coord2d const& pt, double tol) const
