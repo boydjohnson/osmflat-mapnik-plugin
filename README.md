@@ -46,7 +46,7 @@ include path is added automatically via `brew --prefix`.
 | `type`     | yes      | `osmflat`           | selects this plugin              |
 | `file`     | yes      | path                | the `*.osm.flat` archive dir     |
 | `osm_type` | no       | comma-separated `node`\|`way`\|`relation`\|`all` | primitives to emit (default all); e.g. `way,relation` |
-| `ext`      | no       | path                | Ext sidecar dir (`*.osm.ext`) enabling tag push-down |
+| `ext`      | no       | path                | Ext sidecar dir (`*.osm.ext`) enabling tag push-down and, if built with `--multipolygons`, precomputed relation ring assembly |
 | `tags`     | no       | comma-separated `key=value` / `key=*` | tag prefilter, e.g. `highway=*` or `natural=water,natural=wood` |
 | `member_of` | no      | comma-separated `key=value` / `key=*` | relation-membership filter: emit only nodes/ways that are members of a relation matching **all** terms, e.g. `route=train,ref=Borealis` |
 | `numeric`  | no       | comma-separated keys | expose these tags as numbers so `[lanes] > 2` compares numerically |
@@ -337,3 +337,86 @@ but it's easy to miss since it's unconditional Rust-side stderr output, not
 gated by severity like the C++ side's logging. Worth promoting to a proper
 `MAPNIK_LOG_WARN` through the C API at some point rather than a bare
 `eprintln!`.
+
+### Precomputed multipolygon assembly (`ext`'s `--multipolygons`)
+
+Assembling a `type=multipolygon`/`boundary` relation's outer/inner ways into
+closed rings is real stitching work — matching endpoints, picking the nearest
+candidate when several are in range, deciding when a ring is actually
+closed — and doing it live, on every single query that touches an area
+relation, is more fragile than it looks: this exact algorithm had a real
+premature-ring-closure bug that only showed up on one specific real,
+jagged coastline (Elliott Bay, Seattle) after passing every synthetic test
+thrown at it. The wider OSM rendering ecosystem doesn't do this assembly live
+either — `osmcoastline` assembles coastline rings once, offline, and renderers
+just read the already-valid result.
+
+When the archive's `ext` sidecar was built with `osmflat-extc --multipolygons`,
+this plugin does the same thing: `materialize_relation` reads the precomputed
+rings directly (no re-stitching) instead of calling
+`osmflat_ext::multipolygon::assemble_multipolygon` live. Confirmed
+bit-for-bit identical rendering against the live path on real data (NYC
+boroughs, Seattle water bodies including a polygon-with-a-hole case, and the
+Elliott Bay edge case) before and after this was wired in.
+
+One deliberate behavior difference: the precomputed sidecar doesn't carry a
+relation's leftover *open* chains (the rare case where some, but not all, of
+a relation's outer ways stitch into a closed ring) — only closed polygons.
+Live assembly emits those leftovers as an extra unfilled `LineString` feature
+(`closed=false`, `way_area=0`) so a diagnostic style can still see them; with
+the precomputed sidecar active, a relation with no closed polygon simply
+yields no features at all, and its "dropping relation" stderr line above
+fires even for relations that live assembly wouldn't have dropped outright.
+This never affects a style that filters by tag (nothing about those leftovers
+was going to render anyway), but a diagnostic style that renders every
+relation regardless of tags — like the water-body diagnostics used to find
+the Elliott Bay and Bowery Bay issues in the first place — will see less
+under `--multipolygons` than under live assembly. Build without
+`--multipolygons` (or query `assemble_multipolygon` directly) if you need
+those leftovers.
+
+See `osmflat-ext`'s README for the build side (`osmflat-extc --multipolygons`)
+and `osmflat_ext::multipolygon`'s module docs for the algorithm and its test
+coverage (including a regression test for the premature-closure bug).
+
+### Synthetic land polygons (`_osmflat_land=yes`)
+
+`natural=coastline` ways mark a boundary, not an area — there's no
+`natural=water`-style polygon a renderer can just fill for "everything on the
+sea side," so a style that only understands ordinary tagged areas renders open
+ocean, bays, and the water side of any coastline as blank background. This
+plugin fills that gap with a synthetic land layer: any `<Layer>` whose
+`Datasource` `tags` includes the magic pair `_osmflat_land=yes` (real OSM data
+can never carry a leading-underscore key, so this can't collide) gets back a
+`LineString` feature per land ring, closed, with `way_area` set — pair it with
+`order=way_area` and a background-color map so a plain painter's algorithm
+handles nesting (islands in bays, lakes on islands) correctly with no explicit
+hole/exterior pairing.
+
+Two sidecar sources can back this, checked in order:
+
+1. **`ext`'s `--land-polygons`** (preferred when present): rings imported at
+   build time from an external, already-closed coastline dataset — e.g.
+   osmdata.openstreetmap.de's `land-polygons` product, the same one
+   `osm2pgsql`/`openstreetmap-carto` production stacks use — reprojected from
+   Web Mercator to WGS84. Unlike coastline ring assembly below, this dataset
+   is already closed for **mainland** coastlines too (a real country's coast
+   is an open chain thousands of kilometers long across a `natural=coastline`
+   scan of any bounded extract; there's no tile/bbox frame to close it
+   against that isn't arbitrary), so this is what actually shows mainland USA
+   as land rather than leaving it as open water. Traded off against
+   `--coastline`: coarser geometry (the "simplified" variant), since it isn't
+   derived from the archive's own full-resolution `natural=coastline` ways —
+   in practice this hasn't cost visible precision even at NYC's Harlem River /
+   the Narrows or Seattle's Puget Sound shoreline (validated against both).
+2. **`ext`'s `--coastline`** (fallback when `--land-polygons` wasn't built):
+   rings assembled from the parent archive's own `natural=coastline` ways,
+   classified land/water by winding and sorted by area descending. Only ever
+   produces **closed** rings — islands, lakes fully enclosed by coastline —
+   because the ring assembler has nothing to close an open mainland chain
+   against; a sidecar built with `--coastline` alone will correctly show NYC's
+   islands and inter-borough rivers as land/water but can never show a
+   mainland coastline as land at all.
+
+See `osmflat-ext`'s README for both build sides and `osmflat_ext::coastline` /
+`osmflat_ext::land_polygons`'s module docs for the respective algorithms.
