@@ -1195,12 +1195,7 @@ mod tests {
         let parent = build_parent_archive(&route_fixture()).unwrap();
         let opts = osmflat_extc::BuildOptions {
             taginfo: true,
-            backrefs: false,
-            multipolygons: false,
-            coastline: false,
-            land_polygons: None,
-            combinations: false,
-            mmap_scratch: None,
+            ..Default::default()
         };
         OsmflatArchive {
             kind: ArchiveKind::Ext(build_ext_archive(parent, &opts).unwrap()),
