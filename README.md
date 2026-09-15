@@ -16,7 +16,7 @@ mapnik  ──loads──▶  osmflat.input  (C++ MODULE)
                          │  rust/osmflat-capi/src/lib.rs (#[no_mangle] C ABI)
                          │  build.rs → cbindgen → include/osmflat_capi.hpp
                          ▼
-                    osmflat crate  (../osmflat-rs, feature/spatial-index)
+                    osmflat crate  (github.com/boydjohnson/osmflat-rs, main)
                          find_nodes/ways_by_bounding_box, iter_tags
 ```
 
@@ -35,9 +35,21 @@ cmake --build build
 # → build/plugins/osmflat.input
 ```
 
-Requirements: a C++17 compiler, CMake ≥ 3.22, Rust/Cargo, mapnik (`libmapnik`
-discoverable via `pkg-config`), and Boost headers. On macOS/Homebrew the Boost
-include path is added automatically via `brew --prefix`.
+Requirements: a C++17 compiler, CMake ≥ 3.22, Rust/Cargo, **mapnik 4**
+(`libmapnik` discoverable via `pkg-config`), and Boost headers. On
+macOS/Homebrew the Boost include path is added automatically via
+`brew --prefix`.
+
+Mapnik 3.x won't work: `mapnik::parameters::get` returns `std::optional` in 4.x
+and `boost::optional` in 3.x, which this plugin's `init()` relies on
+throughout, so CMake requires `libmapnik>=4.0` rather than letting the build
+fail later with template errors. In practice that means Homebrew (4.2+) or
+Ubuntu 26.04 LTS (4.2.1); 24.04 and 22.04 still ship mapnik 3.1, so building
+there means building mapnik from source.
+
+`osmflat` and `osmflat-ext` are git dependencies (branch `main`) of the Rust
+crate, so a clone of this repo builds on its own — no sibling checkouts — but
+the first build needs network access for cargo to fetch them.
 
 ## Datasource parameters
 
@@ -68,6 +80,24 @@ enclosed area in spherical m² for closed ways / multipolygons; 0 otherwise —
 e.g. `[way_area] > 1000000` for areas over 1 km²), and `z_order` (Integer,
 osm2pgsql-style render priority = `layer*10000 + bridge/tunnel band + highway
 class rank`; also drives the `order=z_order` sort).
+
+## Running the tests
+
+Every check below is registered with ctest (under `-DBUILD_RENDER_TEST=ON`),
+against the checked-in fixtures, so the whole suite is one command:
+
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_RENDER_TEST=ON
+cmake --build build
+ctest --test-dir build --output-on-failure   # C++ side
+(cd rust/osmflat-capi && cargo test)         # Rust C-ABI side
+```
+
+That is exactly what `.github/workflows/ci.yml` runs on every pull request,
+inside an `ubuntu:26.04` container so CI builds against the mapnik an Ubuntu
+LTS user gets from `apt install libmapnik-dev`. The individual harnesses are
+documented below — run them by hand (with other archives, bboxes or styles)
+when a fixture-sized case isn't what you need.
 
 ## Smoke test
 
