@@ -3,10 +3,12 @@
 
 #include <mapnik/datasource_plugin.hpp>
 #include <mapnik/datasource_geometry_type.hpp>
+#include <mapnik/debug.hpp>
 #include <mapnik/feature_factory.hpp>
 #include <mapnik/value/types.hpp>
 
 #include <algorithm>
+#include <sstream>
 #include <tuple>
 
 namespace osmflat {
@@ -27,6 +29,39 @@ const std::vector<std::string>& correlation_tags()
         "amenity", "shop", "man_made", "bridge", "tunnel", "layer", "oneway",
     };
     return tags;
+}
+
+// Renders (key, value) tag-filter pairs as "key=value,key2=*" for logging;
+// empty value means key=* (any value), matching the `tags`/`member_of` param
+// syntax so the debug line reads like something you could paste back in.
+static std::string format_filters(std::vector<std::pair<std::string, std::string>> const& filters)
+{
+    std::ostringstream os;
+    for (std::size_t i = 0; i < filters.size(); ++i) {
+        if (i) { os << ","; }
+        os << filters[i].first << "=" << (filters[i].second.empty() ? "*" : filters[i].second);
+    }
+    return os.str();
+}
+
+static std::string format_kinds(query_kinds const& k)
+{
+    std::ostringstream os;
+    bool first = true;
+    if (k.nodes) { os << "node"; first = false; }
+    if (k.ways) { if (!first) { os << ","; } os << "way"; first = false; }
+    if (k.relations) { if (!first) { os << ","; } os << "relation"; }
+    return os.str();
+}
+
+static const char* format_order(OsmflatOrder order)
+{
+    switch (order) {
+        case OsmflatOrder::OsmflatOrder_ZOrder: return "z_order";
+        case OsmflatOrder::OsmflatOrder_WayArea: return "way_area";
+        case OsmflatOrder::OsmflatOrder_None:
+        default: return "none";
+    }
 }
 
 } // namespace
@@ -198,6 +233,23 @@ void osmflat_datasource::init(mapnik::parameters const& params)
         dump_ = std::make_shared<dump_sink>(*dump);
     }
 
+    // `group_hierarchy`: optional path to a `<GroupHierarchy><Rule
+    // path="..."><Filter>...</Filter></Rule>...` XML file resolving each
+    // feature's designer-facing group nesting for the SVG post-processor
+    // (e.g. `transportation/public-transit/light-rail`). Only meaningful
+    // alongside `dump` -- resolved per-feature in `features()`/the
+    // featureset and dumped, never exposed as a live mapnik attribute.
+    std::optional<std::string> group_hierarchy = params.get<std::string>("group_hierarchy");
+    if (group_hierarchy) {
+        group_rules_ = std::make_shared<std::vector<group_rule>>(load_group_hierarchy(*group_hierarchy));
+    }
+
+    // Precomputed display strings for the per-query MAPNIK_LOG_DEBUG line in
+    // features() (see format_filters/format_kinds above).
+    log_kinds_ = format_kinds(kinds_);
+    log_tags_ = format_filters(tag_filters_);
+    log_member_of_ = format_filters(member_of_filters_);
+
     // Synthetic attributes always available; tag attributes are dynamic
     // (query-driven) and so are not advertised here.
     desc_.add_descriptor(mapnik::attribute_descriptor("osm_id", mapnik::Integer));
@@ -287,6 +339,15 @@ mapnik::featureset_ptr osmflat_datasource::features(mapnik::query const& q) cons
     std::vector<std::string> keys = requested_keys(q);
     std::size_t style_key_count = keys.size();
 
+    MAPNIK_LOG_DEBUG(osmflat) << "osmflat: query bbox=[" << bbox.minx() << "," << bbox.miny()
+        << "," << bbox.maxx() << "," << bbox.maxy() << "]"
+        << " osm_type=" << (log_kinds_.empty() ? "-" : log_kinds_)
+        << " tags=" << (log_tags_.empty() ? "*" : log_tags_)
+        << " member_of=" << (log_member_of_.empty() ? "-" : log_member_of_)
+        << " order=" << format_order(order_)
+        << " simplify_px=" << simplify_px_
+        << " style_keys=" << style_key_count;
+
     // Language resolution: if the style references [name] and `name_lang` is
     // configured, fetch each candidate "name:<lang>" tag past style_key_count_
     // (never exposed to the mapnik attribute schema) so the featureset can
@@ -316,6 +377,16 @@ mapnik::featureset_ptr osmflat_datasource::features(mapnik::query const& q) cons
                 keys.push_back(tag);
             }
         }
+        // Same reasoning, for whatever tags the `group_hierarchy` rules'
+        // `<Filter>`s reference -- a rule can filter on any tag without the
+        // caller also having to list it in `tags=`/the style.
+        if (group_rules_) {
+            for (auto const& tag : referenced_attributes(*group_rules_)) {
+                if (present.insert(tag).second) {
+                    keys.push_back(tag);
+                }
+            }
+        }
     }
 
     std::vector<OsmflatStrRef> refs = key_refs(keys);
@@ -341,11 +412,18 @@ mapnik::featureset_ptr osmflat_datasource::features(mapnik::query const& q) cons
         order_, tol);
 
     return std::make_shared<osmflat_featureset>(
-        std::move(fs), std::move(keys), style_key_count, std::move(active_name_langs), numeric_keys_, dump_);
+        std::move(fs), std::move(keys), style_key_count, std::move(active_name_langs), numeric_keys_, dump_,
+        group_rules_);
 }
 
 mapnik::featureset_ptr osmflat_datasource::features_at_point(mapnik::coord2d const& pt, double tol) const
 {
+    MAPNIK_LOG_DEBUG(osmflat) << "osmflat: query_at_point pt=(" << pt.x << "," << pt.y << ")"
+        << " tol=" << tol
+        << " osm_type=" << (log_kinds_.empty() ? "-" : log_kinds_)
+        << " tags=" << (log_tags_.empty() ? "*" : log_tags_)
+        << " member_of=" << (log_member_of_.empty() ? "-" : log_member_of_);
+
     // No property list on this path; emit synthetics only.
     std::vector<std::string> keys;
     std::vector<OsmflatStrRef> refs;

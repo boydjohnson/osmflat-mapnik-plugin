@@ -27,7 +27,10 @@ corrosion_import_crate(
 
 # --- Mapnik ------------------------------------------------------------------
 find_package(PkgConfig REQUIRED)
-pkg_check_modules(MAPNIK REQUIRED IMPORTED_TARGET libmapnik)
+# Mapnik 4 is required: its API returns std::optional where 3.x returned
+# boost::optional (e.g. parameters::get), so a 3.x install would otherwise
+# fail with compile errors deep in the sources rather than here.
+pkg_check_modules(MAPNIK REQUIRED IMPORTED_TARGET libmapnik>=4.0)
 
 # Mapnik's public headers include <boost/...>, but libmapnik.pc does not carry
 # Boost's include path. On Homebrew, Boost is header-only under the brew prefix.
@@ -48,6 +51,7 @@ add_library(osmflat_input MODULE
     src/osmflat_datasource.cpp
     src/osmflat_featureset.cpp
     src/osmflat_dump_sink.cpp
+    src/osmflat_group_hierarchy.cpp
 )
 
 # Mapnik loads plugins by the bare name `osmflat.input` (no `lib` prefix).
@@ -71,6 +75,11 @@ target_link_libraries(osmflat_input PRIVATE
 )
 
 target_compile_options(osmflat_input PRIVATE -Wall -Wextra)
+
+# Enables mapnik's MAPNIK_LOG_DEBUG/_WARN/_ERROR machinery (a no-op otherwise,
+# per mapnik/debug.hpp) so per-query diagnostics are gated by the normal
+# mapnik::logger severity instead of always-on or compiled away.
+target_compile_definitions(osmflat_input PRIVATE MAPNIK_LOG)
 
 # Place the built plugin where it's easy to point MAPNIK_PLUGINDIR at.
 set_target_properties(osmflat_input PROPERTIES
@@ -106,4 +115,44 @@ if(BUILD_RENDER_TEST)
     target_include_directories(check_name_lang PRIVATE ${HOMEBREW_PREFIX}/include)
     target_link_libraries(check_name_lang PRIVATE PkgConfig::MAPNIK)
     add_dependencies(check_name_lang osmflat_input)
+
+    # Unit-tests the `group_hierarchy` rule engine in isolation (synthetic
+    # features, no archive/bbox needed) -- compiles the module's source
+    # directly rather than loading the plugin, since it's exercising
+    # osmflat_group_hierarchy.cpp's own functions, not the datasource.
+    add_executable(check_group_hierarchy test/check_group_hierarchy.cpp src/osmflat_group_hierarchy.cpp)
+    target_include_directories(check_group_hierarchy PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${HOMEBREW_PREFIX}/include
+    )
+    target_link_libraries(check_group_hierarchy PRIVATE PkgConfig::MAPNIK)
+
+    # --- ctest registrations (`ctest --test-dir build`) ----------------------
+    # The same invocations the README documents, against the checked-in
+    # fixtures, so CI and local runs share one definition of "the tests".
+    enable_testing()
+    set(OSMFLAT_PLUGIN_DIR ${CMAKE_BINARY_DIR}/plugins)
+    set(FIXTURES ${CMAKE_SOURCE_DIR}/test/fixtures)
+    set(BAARLE_BBOX 4.75 51.38 5.02 51.49)
+
+    # compare_plugins also needs mapnik's stock geojson.input; libmapnik.pc
+    # advertises where the stock plugins live (Homebrew and Debian alike).
+    pkg_get_variable(MAPNIK_PLUGINS_DIR libmapnik plugins_dir)
+
+    add_test(NAME check_group_hierarchy
+        COMMAND check_group_hierarchy ${CMAKE_SOURCE_DIR}/group-hierarchy.default.xml)
+    add_test(NAME check_member_of
+        COMMAND check_member_of ${OSMFLAT_PLUGIN_DIR} ${FIXTURES}/bicycle-route.osm.flat
+            4.64 51.35 4.74 51.43)
+    add_test(NAME check_name_lang
+        COMMAND check_name_lang ${OSMFLAT_PLUGIN_DIR} ${FIXTURES}/baarle-hertog.osm.flat ${BAARLE_BBOX})
+    add_test(NAME compare_plugins
+        COMMAND compare_plugins ${OSMFLAT_PLUGIN_DIR} ${MAPNIK_PLUGINS_DIR}
+            ${FIXTURES}/baarle-hertog.osm.flat ${FIXTURES}/baarle-hertog.geojson ${BAARLE_BBOX})
+    # No-crash render smoke test (no pixel assertions; the style has no text,
+    # so it doesn't depend on fonts being registered).
+    add_test(NAME render_relations
+        COMMAND render ${OSMFLAT_PLUGIN_DIR} ${CMAKE_SOURCE_DIR}/test/style-relations.xml
+            ${FIXTURES}/baarle-hertog.osm.flat ${CMAKE_BINARY_DIR}/render_relations.png
+            ${BAARLE_BBOX} 500 500)
 endif()

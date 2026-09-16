@@ -98,6 +98,31 @@ unsafe fn kv_refs<'a>(ptr: *const OsmflatKvRef, num: usize) -> Vec<(&'a [u8], Op
         .collect()
 }
 
+/// True if `_osmflat_land` (any value, or `key=*`) is among the query's
+/// `tags` filter terms -- the opt-in signal for synthetic coastline land
+/// polygons. A real OSM entity can never carry this key (leading underscore),
+/// so it can share the same `tags` list as ordinary prefilter terms without
+/// any risk of colliding with real data.
+fn wants_land(filters: &[(&[u8], Option<&[u8]>)]) -> bool {
+    filters
+        .iter()
+        .any(|&(k, v)| k == b"_osmflat_land" && v.is_none_or(|v| v == b"yes"))
+}
+
+/// True if a ring's own bounding box (computed from its vertices; coastline
+/// rings have no spatial index of their own) overlaps the query bbox.
+fn ring_intersects_bbox(vertices: &[(f64, f64)], bbox: Bbox) -> bool {
+    let (mut min_lon, mut min_lat) = (f64::INFINITY, f64::INFINITY);
+    let (mut max_lon, mut max_lat) = (f64::NEG_INFINITY, f64::NEG_INFINITY);
+    for &(lon, lat) in vertices {
+        min_lon = min_lon.min(lon);
+        min_lat = min_lat.min(lat);
+        max_lon = max_lon.max(lon);
+        max_lat = max_lat.max(lat);
+    }
+    min_lon <= bbox.max_lon && max_lon >= bbox.min_lon && min_lat <= bbox.max_lat && max_lat >= bbox.min_lat
+}
+
 /// A borrowed attribute value handed *out* to C++. `present == false` means the
 /// feature has no such tag (render as `value_null`); otherwise `ptr`/`len` are
 /// the UTF-8 value bytes, valid until the next `osmflat_featureset_next` / free.
@@ -132,6 +157,38 @@ impl OsmflatArchive {
     fn taginfo(&self) -> Option<TaginfoQuery<'_>> {
         match &self.kind {
             ArchiveKind::Ext(e) => e.taginfo(),
+            ArchiveKind::Plain(_) => None,
+        }
+    }
+
+    /// Precomputed multipolygon relation query, when an Ext sidecar with
+    /// `--multipolygons` is loaded. `None` falls back to live per-query
+    /// assembly in `materialize_relation`.
+    fn multipolygons(&self) -> Option<osmflat_ext::multipolygon::MultipolygonsQuery<'_>> {
+        match &self.kind {
+            ArchiveKind::Ext(e) => e.multipolygons(),
+            ArchiveKind::Plain(_) => None,
+        }
+    }
+
+    /// Precomputed coastline ring query, when an Ext sidecar with
+    /// `--coastline` is loaded. `None` means no synthetic land features are
+    /// ever added, regardless of what a style asks for.
+    fn coastline(&self) -> Option<osmflat_ext::coastline::CoastlineQuery<'_>> {
+        match &self.kind {
+            ArchiveKind::Ext(e) => e.coastline(),
+            ArchiveKind::Plain(_) => None,
+        }
+    }
+
+    /// Imported external land-polygon query, when an Ext sidecar with
+    /// `--land-polygons` is loaded. Preferred over `coastline()` for
+    /// synthetic land features -- unlike the coastline ring assembler, which
+    /// only ever emits closed rings (islands and lakes), this dataset is
+    /// already closed for mainland coastlines too.
+    fn land_polygons(&self) -> Option<osmflat_ext::land_polygons::LandPolygonsQuery<'_>> {
+        match &self.kind {
+            ArchiveKind::Ext(e) => e.land_polygons(),
             ArchiveKind::Plain(_) => None,
         }
     }
@@ -450,9 +507,10 @@ pub unsafe extern "C" fn osmflat_query(
     }
 
     if include_relations {
+        let mp = handle.multipolygons();
         match candidate_indices(handle, &filter_refs, bbox, Prim::Relation) {
             Some(indices) => features.extend(indices.into_iter().flat_map(|i| {
-                materialize_relation(archive, i as usize, scale, simplify_tolerance, &key_refs)
+                materialize_relation(archive, i as usize, scale, simplify_tolerance, &key_refs, mp)
             })),
             None => {
                 let base = archive.relations().as_ptr();
@@ -465,8 +523,61 @@ pub unsafe extern "C" fn osmflat_query(
                         scale,
                         simplify_tolerance,
                         &key_refs,
+                        mp,
                     ));
                 }
+            }
+        }
+    }
+
+    // Synthetic coastline "land" polygons: opt-in via a magic tag pair in the
+    // `tags` filter (`_osmflat_land=yes`) rather than a new osm_type/C-ABI
+    // parameter -- piggybacks entirely on the existing tags-filter plumbing,
+    // so no signature changes anywhere in the C++/FFI boundary were needed.
+    // Independent of `include_nodes`/`include_ways`/`include_relations`: a
+    // style asking for land polygons gets them regardless of what else it
+    // asked for. See osmflat-mapnik-plugin's README for the full picture
+    // (mirrors `osmcoastline`'s land/water split, precomputed once offline).
+    //
+    // `land_polygons` (imported from an external, already-closed dataset) is
+    // preferred over `coastline` (rings assembled from the parent's own
+    // `natural=coastline` ways): the assembler only ever closes islands and
+    // lakes -- open mainland chains are dropped, not emitted as land -- so a
+    // sidecar built with `--coastline` alone can never show mainland as land.
+    if wants_land(&filter_refs) {
+        let land_key_idx = key_refs.iter().position(|k| *k == b"_osmflat_land");
+        let mut push_land_ring = |vertices: &[(f64, f64)], area_m2: f64| {
+            let mut attrs = vec![None; key_refs.len()];
+            if let Some(i) = land_key_idx {
+                attrs[i] = Some(b"yes".to_vec());
+            }
+            features.push(OwnedFeature {
+                osm_id: None,
+                osm_type: OsmflatOsmType::Way,
+                geom_type: OsmflatGeomType::LineString,
+                is_closed: true,
+                z_order: 0,
+                way_area: area_m2,
+                coords: vertices.iter().flat_map(|&(x, y)| [x, y]).collect(),
+                polygons: Vec::new(),
+                attrs,
+            });
+        };
+
+        if let Some(land_polygons) = handle.land_polygons() {
+            for ring in land_polygons.rings() {
+                if !ring.is_land || !ring_intersects_bbox(&ring.vertices, bbox) {
+                    continue;
+                }
+                let area_m2 = osmflat_ext::coastline::signed_area_m2(&ring.vertices).abs();
+                push_land_ring(&ring.vertices, area_m2);
+            }
+        } else if let Some(coastline) = handle.coastline() {
+            for ring in coastline.rings() {
+                if !ring.is_land || !ring_intersects_bbox(&ring.vertices, bbox) {
+                    continue;
+                }
+                push_land_ring(&ring.vertices, ring.area_m2);
             }
         }
     }
@@ -878,12 +989,51 @@ fn materialize_relation(
     scale: f64,
     tol: f64,
     keys: &[&[u8]],
+    mp: Option<osmflat_ext::multipolygon::MultipolygonsQuery>,
 ) -> Vec<OwnedFeature> {
     let relation = &archive.relations()[idx];
-    if !is_area_relation(archive, relation) {
+    if !osmflat_ext::multipolygon::is_area_relation(archive, relation) {
         return Vec::new();
     }
-    let (polygons, open_outer_chains) = assemble_multipolygon(archive, idx, scale);
+
+    // Prefer the precomputed sidecar (assembled once, offline, by
+    // `osmflat-extc --multipolygons`) over live per-query ring stitching --
+    // see `osmflat_ext::multipolygon`'s module docs for why live assembly is
+    // more fragile than it looks. The sidecar doesn't carry leftover *open*
+    // chains (rare, diagnostic-only: a relation whose outer ways don't fully
+    // close), so with it active such a relation simply yields no features,
+    // rather than the live path's extra unfilled LineString feature.
+    let (polygons, open_outer_chains): (Vec<Vec<Vec<f64>>>, Vec<Vec<f64>>) = match mp {
+        Some(mp) => {
+            let polygons = mp
+                .polygons(idx)
+                .into_iter()
+                .map(|poly| {
+                    poly.into_iter()
+                        .map(|ring| ring.into_iter().flat_map(|(x, y)| [x, y]).collect())
+                        .collect()
+                })
+                .collect();
+            (polygons, Vec::new())
+        }
+        None => {
+            let (polygons, open_outer_chains) =
+                osmflat_ext::multipolygon::assemble_multipolygon(archive, idx, scale);
+            // Flatten (parent node index + resolved lon/lat) vertices down to
+            // the plain interleaved [x0, y0, ...] coords the rest of this
+            // function (and the C ABI below) already works in.
+            let flatten = |ring: Vec<osmflat_ext::multipolygon::Vertex>| -> Vec<f64> {
+                ring.into_iter().flat_map(|v| [v.lon, v.lat]).collect()
+            };
+            let polygons = polygons
+                .into_iter()
+                .map(|poly| poly.into_iter().map(flatten).collect())
+                .collect();
+            let open_outer_chains = open_outer_chains.into_iter().map(flatten).collect();
+            (polygons, open_outer_chains)
+        }
+    };
+
     if polygons.is_empty() && open_outer_chains.is_empty() {
         let name = find_tag(archive, relation.tags(), b"name")
             .map(|v| String::from_utf8_lossy(v).into_owned())
@@ -946,183 +1096,9 @@ fn materialize_relation(
     features
 }
 
-/// True if the relation is an area type whose member ways enclose polygons.
-fn is_area_relation(archive: &Osm, relation: &Relation) -> bool {
-    match find_tag(archive, relation.tags(), b"type") {
-        Some(v) => v == b"multipolygon" || v == b"boundary",
-        None => false,
-    }
-}
-
-/// Resolve a way's node-index sequence (dropping unresolved refs).
-fn way_node_indices(archive: &Osm, way: &Way) -> Vec<u64> {
-    let nodes_index = archive.nodes_index();
-    let refs = way.refs();
-    (refs.start as usize..refs.end as usize)
-        .filter_map(|i| nodes_index[i].value())
-        .collect()
-}
-
-/// Endpoints within this distance are treated as the same junction when
-/// stitching ring segments. Chosen to bridge duplicate-node seams seen in
-/// real extracts (tens to a couple hundred meters) while staying well below
-/// the gap left by genuinely missing boundary members (800m+).
-const RING_SNAP_TOLERANCE_M: f64 = 250.0;
-
-/// Approximate great-circle distance in meters between two `(lon, lat)`
-/// points in degrees. Equirectangular approximation; adequate at the scale
-/// of ring-closing gaps (tens to hundreds of meters).
-fn dist_m(a: (f64, f64), b: (f64, f64)) -> f64 {
-    const R: f64 = 6_378_137.0;
-    let (lon1, lat1) = (a.0.to_radians(), a.1.to_radians());
-    let (lon2, lat2) = (b.0.to_radians(), b.1.to_radians());
-    let x = (lon2 - lon1) * ((lat1 + lat2) / 2.0).cos();
-    let y = lat2 - lat1;
-    R * (x * x + y * y).sqrt()
-}
-
-/// Endpoints closer than this are treated as identical (floating-point
-/// round-trip noise only) — used to detect a way that is already closed on
-/// its own, which must not be confused with the much larger snap tolerance
-/// used for bridging duplicate-node seams between *different* ways.
-const EXACT_EPS_M: f64 = 0.01;
-
-struct AssembledRings {
-    rings: Vec<Vec<(f64, f64)>>,
-    open_chains: Vec<Vec<(f64, f64)>>,
-}
-
-/// Stitch open/closed member segments (each a coordinate sequence) into
-/// closed rings by matching endpoints, exactly or (once at least one seam
-/// between two distinct ways has been stitched) within
-/// `RING_SNAP_TOLERANCE_M` (real-world extracts sometimes encode the same
-/// junction as two distinct, near-coincident nodes). A lone way is only
-/// accepted as its own ring if its ends are exactly coincident — otherwise a
-/// short way whose two ends simply happen to be near each other would be
-/// misread as a closed area. Leftovers with a gap too large to bridge (e.g.
-/// a member way missing from a clipped extract) are returned as open chains.
-fn assemble_rings_and_open_chains(mut segments: Vec<Vec<(f64, f64)>>) -> AssembledRings {
-    let mut rings = Vec::new();
-    let mut open_chains = Vec::new();
-    while let Some(mut ring) = segments.pop() {
-        let mut stitched = 0u32;
-        loop {
-            let close_dist = dist_m(*ring.first().unwrap(), *ring.last().unwrap());
-            let closed = ring.len() > 1
-                && if stitched > 0 {
-                    close_dist < RING_SNAP_TOLERANCE_M
-                } else {
-                    close_dist < EXACT_EPS_M
-                };
-            if closed {
-                rings.push(ring);
-                break;
-            }
-            let end = *ring.last().unwrap();
-            // Find the remaining segment whose near end is closest to this open
-            // endpoint (not merely the first one within tolerance): distinct
-            // rings that pass close to each other (e.g. the main shoreline and a
-            // separate ring around a harbor mouth) can each have an endpoint
-            // within RING_SNAP_TOLERANCE_M, and picking the first match in list
-            // order risks splicing the wrong ring in.
-            let next = segments
-                .iter()
-                .enumerate()
-                .filter_map(|(i, s)| {
-                    let d = dist_m(*s.first().unwrap(), end).min(dist_m(*s.last().unwrap(), end));
-                    (d < RING_SNAP_TOLERANCE_M).then_some((i, d))
-                })
-                .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
-                .map(|(i, _)| i);
-            match next {
-                Some(i) => {
-                    let mut seg = segments.remove(i);
-                    if dist_m(*seg.last().unwrap(), end) < dist_m(*seg.first().unwrap(), end) {
-                        seg.reverse();
-                    }
-                    // seg now starts near `end`; append the rest, skipping its matched vertex.
-                    ring.extend_from_slice(&seg[1..]);
-                    stitched += 1;
-                }
-                None => {
-                    open_chains.push(ring);
-                    break;
-                }
-            }
-        }
-    }
-    AssembledRings { rings, open_chains }
-}
-
-fn assemble_rings(segments: Vec<Vec<(f64, f64)>>) -> Vec<Vec<(f64, f64)>> {
-    assemble_rings_and_open_chains(segments).rings
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn ring_assembler_returns_unclosed_chain() {
-        let segments = vec![vec![(1.0, 0.0), (2.0, 0.0)], vec![(0.0, 0.0), (1.0, 0.0)]];
-
-        let assembled = assemble_rings_and_open_chains(segments);
-
-        assert!(assembled.rings.is_empty());
-        assert_eq!(
-            assembled.open_chains,
-            vec![vec![(0.0, 0.0), (1.0, 0.0), (2.0, 0.0)]]
-        );
-    }
-
-    #[test]
-    fn ring_assembler_keeps_closed_ring_out_of_open_chains() {
-        let segments = vec![vec![(0.0, 0.0), (0.0, 1.0), (1.0, 0.0), (0.0, 0.0)]];
-
-        let assembled = assemble_rings_and_open_chains(segments);
-
-        assert_eq!(assembled.rings.len(), 1);
-        assert!(assembled.open_chains.is_empty());
-    }
-
-    /// Reproduces the Lake Michigan multipolygon bug: when two distinct
-    /// rings pass near each other (e.g. the main shoreline ring and a
-    /// separate small ring around a harbor/river mouth), a decoy segment
-    /// from the *other* ring can be within `RING_SNAP_TOLERANCE_M` of the
-    /// open end being stitched. The assembler must splice in the *nearest*
-    /// matching segment, not merely the first one it happens to encounter in
-    /// list order — otherwise it stitches the wrong ring in, producing a
-    /// self-intersecting polygon with a long spurious "shortcut" edge
-    /// instead of the correct closed ring.
-    #[test]
-    fn ring_assembler_picks_nearest_endpoint_not_first_in_list() {
-        // Decoy segment belonging to an unrelated ring, placed first in the
-        // segment list. Its start point is within RING_SNAP_TOLERANCE_M of
-        // the open ring's end (~223m), but farther away than the true
-        // continuation below.
-        let seg_wrong = vec![(10.002, 0.0), (20.0, 0.0)];
-        // True continuation of the ring being assembled: closer to the open
-        // end (~111m) than seg_wrong, but placed after it in the list.
-        let seg_correct = vec![(10.001, 0.0), (10.0, 1.0), (0.0, 0.0)];
-        let seg_start = vec![(0.0, 0.0), (10.0, 0.0)];
-
-        let segments = vec![seg_wrong, seg_correct, seg_start];
-
-        let assembled = assemble_rings_and_open_chains(segments);
-
-        assert_eq!(
-            assembled.rings,
-            vec![vec![(0.0, 0.0), (10.0, 0.0), (10.0, 1.0), (0.0, 0.0)]],
-            "assembler should splice in the nearer segment (seg_correct), not \
-             the first-in-list-order segment (seg_wrong), to produce a closed \
-             ring"
-        );
-        assert_eq!(
-            assembled.open_chains.len(),
-            1,
-            "the decoy segment should be left over as its own open chain"
-        );
-    }
 
     #[test]
     fn intersect_sorted_u64_basics() {
@@ -1219,9 +1195,7 @@ mod tests {
         let parent = build_parent_archive(&route_fixture()).unwrap();
         let opts = osmflat_extc::BuildOptions {
             taginfo: true,
-            backrefs: false,
-            combinations: false,
-            mmap_scratch: None,
+            ..Default::default()
         };
         OsmflatArchive {
             kind: ArchiveKind::Ext(build_ext_archive(parent, &opts).unwrap()),
@@ -1324,99 +1298,6 @@ mod tests {
             materialize_way(archive, w as usize, handle.coord_scale, 0.0, &keys, None).unwrap();
         assert_eq!(plain.attrs[2], None);
     }
-}
-
-/// Ray-casting point-in-polygon test against a ring of `(x, y)` vertices.
-fn point_in_ring(pt: (f64, f64), ring: &[(f64, f64)]) -> bool {
-    let (px, py) = pt;
-    let mut inside = false;
-    let n = ring.len();
-    let mut j = n - 1;
-    for i in 0..n {
-        let (xi, yi) = ring[i];
-        let (xj, yj) = ring[j];
-        if (yi > py) != (yj > py) && px < (xj - xi) * (py - yi) / (yj - yi) + xi {
-            inside = !inside;
-        }
-        j = i;
-    }
-    inside
-}
-
-/// Assemble a `type=multipolygon`/`boundary` relation into polygons, each an
-/// exterior ring followed by the holes it contains, plus any unclosed exterior
-/// chains. Returns `polygons[p][r]` = interleaved `[x0, y0, ...]` coords for
-/// ring `r`, and open outer chains as interleaved line coords.
-fn assemble_multipolygon(
-    archive: &Osm,
-    rel_idx: usize,
-    scale: f64,
-) -> (Vec<Vec<Vec<f64>>>, Vec<Vec<f64>>) {
-    let members = archive.relation_members();
-    let ways = archive.ways();
-    let strings = archive.stringtable();
-    let nodes = archive.nodes();
-
-    let to_coords = |seg: &[u64]| -> Vec<(f64, f64)> {
-        seg.iter()
-            .map(|&n| {
-                let node = &nodes[n as usize];
-                (node.lon() as f64 / scale, node.lat() as f64 / scale)
-            })
-            .collect()
-    };
-
-    let mut outer_segs: Vec<Vec<(f64, f64)>> = Vec::new();
-    let mut inner_segs: Vec<Vec<(f64, f64)>> = Vec::new();
-    for member in members.at(rel_idx) {
-        let RelationMembersRef::WayMember(wm) = member else {
-            continue;
-        };
-        let Some(way_idx) = wm.way_idx() else {
-            continue;
-        };
-        let seg = way_node_indices(archive, &ways[way_idx as usize]);
-        if seg.len() < 2 {
-            continue;
-        }
-        // Role "inner" carves holes; everything else (outer, empty) is exterior.
-        if strings.substring_raw(wm.role_idx() as usize) == b"inner" {
-            inner_segs.push(to_coords(&seg));
-        } else {
-            outer_segs.push(to_coords(&seg));
-        }
-    }
-
-    let assembled_outers = assemble_rings_and_open_chains(outer_segs);
-    let outers = assembled_outers.rings;
-    let inner_rings = assemble_rings(inner_segs);
-
-    let flatten =
-        |ring: &[(f64, f64)]| -> Vec<f64> { ring.iter().flat_map(|&(x, y)| [x, y]).collect() };
-    let open_outer_chains: Vec<Vec<f64>> = assembled_outers
-        .open_chains
-        .iter()
-        .map(|c| flatten(c))
-        .collect();
-
-    if outers.is_empty() {
-        return (Vec::new(), open_outer_chains);
-    }
-
-    // One polygon per exterior ring; assign each hole to the exterior that
-    // contains its first vertex.
-    let mut polygons: Vec<Vec<Vec<f64>>> = outers.iter().map(|o| vec![flatten(o)]).collect();
-    for inner_coords in &inner_rings {
-        let Some(&first) = inner_coords.first() else {
-            continue;
-        };
-        if let Some(oi) = outers.iter().position(|o| point_in_ring(first, o)) {
-            polygons[oi].push(flatten(inner_coords));
-        }
-        // A hole with no containing exterior is dropped (malformed relation).
-    }
-
-    (polygons, open_outer_chains)
 }
 
 /// Frees a feature set.

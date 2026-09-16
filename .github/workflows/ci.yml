@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  ubuntu-26-04:
+    name: Build & test (Ubuntu 26.04, distro mapnik)
+    runs-on: ubuntu-latest
+    # Run inside the official image rather than relying on a hosted
+    # `ubuntu-26.04` runner label, so we build against exactly the mapnik
+    # that `apt install libmapnik-dev` gives a 26.04 LTS user (4.2.x).
+    container: ubuntu:26.04
+    env:
+      DEBIAN_FRONTEND: noninteractive
+      CARGO_TERM_COLOR: always
+
+    steps:
+      - name: Install system packages
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential cmake pkgconf git curl ca-certificates \
+            libmapnik-dev
+          echo "mapnik $(pkg-config --modversion libmapnik)"
+
+      # osmflat / osmflat-ext are git dependencies of rust/osmflat-capi, so
+      # cargo fetches them (branch main) -- nothing else to check out here.
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust/osmflat-capi
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_RENDER_TEST=ON
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Test (plugin, via ctest)
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Test (Rust C API)
+        working-directory: rust/osmflat-capi
+        run: cargo test --release

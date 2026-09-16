@@ -9,6 +9,7 @@
 
 #include <mapnik/mapnik.hpp>
 #include <mapnik/map.hpp>
+#include <mapnik/debug.hpp>
 #include <mapnik/font_engine_freetype.hpp>
 #include <mapnik/datasource_cache.hpp>
 #include <mapnik/load_map.hpp>
@@ -50,6 +51,13 @@ int main(int argc, char** argv)
     const int height = (argc == 11) ? std::stoi(argv[10]) : 1000;
 
     try {
+        // Opt-in: OSMFLAT_LOG_DEBUG=1 surfaces the plugin's per-query
+        // MAPNIK_LOG_DEBUG lines (bbox/tags/osm_type asked for, feature count
+        // returned) on stderr. Off by default so ordinary renders stay quiet.
+        if (std::getenv("OSMFLAT_LOG_DEBUG")) {
+            mapnik::logger::set_severity(mapnik::logger::debug);
+        }
+
         mapnik::setup();
         mapnik::datasource_cache::instance().register_datasources(plugin_dir);
         // Register bundled DejaVu fonts so TextSymbolizer can resolve face-name.

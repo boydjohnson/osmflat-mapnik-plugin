@@ -108,6 +108,12 @@ void dump_sink::write(const dump_record& rec)
     line << ",\"way_area\":" << rec.way_area;
     line << ",\"is_closed\":" << (rec.is_closed ? "true" : "false");
 
+    if (!rec.group_path.empty()) {
+        line << ",\"group_path\":";
+        write_escaped(line, rec.group_path);
+        line << ",\"group_rank\":" << rec.group_rank;
+    }
+
     for (auto const& kv : rec.tags) {
         line << ',';
         write_escaped(line, kv.first);

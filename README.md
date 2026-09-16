@@ -16,7 +16,7 @@ mapnik  ──loads──▶  osmflat.input  (C++ MODULE)
                          │  rust/osmflat-capi/src/lib.rs (#[no_mangle] C ABI)
                          │  build.rs → cbindgen → include/osmflat_capi.hpp
                          ▼
-                    osmflat crate  (../osmflat-rs, feature/spatial-index)
+                    osmflat crate  (github.com/boydjohnson/osmflat-rs, main)
                          find_nodes/ways_by_bounding_box, iter_tags
 ```
 
@@ -35,9 +35,21 @@ cmake --build build
 # → build/plugins/osmflat.input
 ```
 
-Requirements: a C++17 compiler, CMake ≥ 3.22, Rust/Cargo, mapnik (`libmapnik`
-discoverable via `pkg-config`), and Boost headers. On macOS/Homebrew the Boost
-include path is added automatically via `brew --prefix`.
+Requirements: a C++17 compiler, CMake ≥ 3.22, Rust/Cargo, **mapnik 4**
+(`libmapnik` discoverable via `pkg-config`), and Boost headers. On
+macOS/Homebrew the Boost include path is added automatically via
+`brew --prefix`.
+
+Mapnik 3.x won't work: `mapnik::parameters::get` returns `std::optional` in 4.x
+and `boost::optional` in 3.x, which this plugin's `init()` relies on
+throughout, so CMake requires `libmapnik>=4.0` rather than letting the build
+fail later with template errors. In practice that means Homebrew (4.2+) or
+Ubuntu 26.04 LTS (4.2.1); 24.04 and 22.04 still ship mapnik 3.1, so building
+there means building mapnik from source.
+
+`osmflat` and `osmflat-ext` are git dependencies (branch `main`) of the Rust
+crate, so a clone of this repo builds on its own — no sibling checkouts — but
+the first build needs network access for cargo to fetch them.
 
 ## Datasource parameters
 
@@ -46,7 +58,7 @@ include path is added automatically via `brew --prefix`.
 | `type`     | yes      | `osmflat`           | selects this plugin              |
 | `file`     | yes      | path                | the `*.osm.flat` archive dir     |
 | `osm_type` | no       | comma-separated `node`\|`way`\|`relation`\|`all` | primitives to emit (default all); e.g. `way,relation` |
-| `ext`      | no       | path                | Ext sidecar dir (`*.osm.ext`) enabling tag push-down |
+| `ext`      | no       | path                | Ext sidecar dir (`*.osm.ext`) enabling tag push-down and, if built with `--multipolygons`, precomputed relation ring assembly |
 | `tags`     | no       | comma-separated `key=value` / `key=*` | tag prefilter, e.g. `highway=*` or `natural=water,natural=wood` |
 | `member_of` | no      | comma-separated `key=value` / `key=*` | relation-membership filter: emit only nodes/ways that are members of a relation matching **all** terms, e.g. `route=train,ref=Borealis` |
 | `numeric`  | no       | comma-separated keys | expose these tags as numbers so `[lanes] > 2` compares numerically |
@@ -68,6 +80,24 @@ enclosed area in spherical m² for closed ways / multipolygons; 0 otherwise —
 e.g. `[way_area] > 1000000` for areas over 1 km²), and `z_order` (Integer,
 osm2pgsql-style render priority = `layer*10000 + bridge/tunnel band + highway
 class rank`; also drives the `order=z_order` sort).
+
+## Running the tests
+
+Every check below is registered with ctest (under `-DBUILD_RENDER_TEST=ON`),
+against the checked-in fixtures, so the whole suite is one command:
+
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_RENDER_TEST=ON
+cmake --build build
+ctest --test-dir build --output-on-failure   # C++ side
+(cd rust/osmflat-capi && cargo test)         # Rust C-ABI side
+```
+
+That is exactly what `.github/workflows/ci.yml` runs on every pull request,
+inside an `ubuntu:26.04` container so CI builds against the mapnik an Ubuntu
+LTS user gets from `apt install libmapnik-dev`. The individual harnesses are
+documented below — run them by hand (with other archives, bboxes or styles)
+when a fixture-sized case isn't what you need.
 
 ## Smoke test
 
@@ -287,3 +317,136 @@ against one layer) can all point `dump` at the same path without truncating
 each other — clear the file yourself before a fresh render run. Point queries
 (`features_at_point`, interactive lookups) never write to the dump; it's meant
 to correlate one bulk render, not ad hoc queries.
+
+### Debug logging
+
+The plugin logs one line per query through mapnik's own `MAPNIK_LOG_DEBUG`
+machinery — off by default (compiled to a genuine no-op unless `MAPNIK_LOG` is
+defined, which this plugin's `CMakeLists.txt` does) and gated at runtime by
+the usual `mapnik::logger` severity, same as every other mapnik plugin's debug
+output. Two lines per query, from `osmflat_datasource::features()` /
+`features_at_point()` and from `osmflat_featureset`'s destructor:
+
+```
+osmflat: query bbox=[-73.9,40.7575,-73.84,40.8025] osm_type=way tags=natural=bay member_of=- order=none simplify_px=0.5 style_keys=1
+osmflat: featureset closed, emitted=3 features
+```
+
+The first line is everything the query asked for (bbox, `osm_type`, `tags`,
+`member_of`, `order`, `simplify`, how many style keys were requested); the
+second is how many features the returned cursor actually yielded, logged when
+mapnik is done with it — whether it drained the cursor to exhaustion or
+stopped early. Useful for confirming a `tags`/`member_of` filter is actually
+selecting what you think it is, or for noticing that a layer you expected to
+be empty (or non-empty) isn't, without adding throwaway `[osm_id]` text rules
+to a style just to see what came back.
+
+To turn it on, the *caller* still has to raise mapnik's log severity — this
+plugin only emits at debug level, it doesn't change the global severity
+itself. `test/render.cpp` (the smoke-test renderer, and what `scripts/render.sh`
+in the styles repo shells out to) does this when `OSMFLAT_LOG_DEBUG` is set:
+
+```
+OSMFLAT_LOG_DEBUG=1 render.sh style.xml out.png <bbox...>
+```
+
+Other hosts (e.g. `mapnik-config`-based mod_tile setups, or your own harness)
+can do the same with `mapnik::logger::set_severity(mapnik::logger::debug)`
+before rendering.
+
+Separately, `osmflat-capi`'s relation assembly (`assemble_multipolygon`) prints
+a raw `eprintln!` — not routed through `MAPNIK_LOG` at all — when a relation's
+outer ways don't form a closed ring and it has to drop the relation entirely:
+
+```
+osmflat-mapnik-plugin: dropping relation id=Some(15624542) name="": outer ways don't form a closed ring
+```
+
+This is real signal (a relation that should have area got silently dropped)
+but it's easy to miss since it's unconditional Rust-side stderr output, not
+gated by severity like the C++ side's logging. Worth promoting to a proper
+`MAPNIK_LOG_WARN` through the C API at some point rather than a bare
+`eprintln!`.
+
+### Precomputed multipolygon assembly (`ext`'s `--multipolygons`)
+
+Assembling a `type=multipolygon`/`boundary` relation's outer/inner ways into
+closed rings is real stitching work — matching endpoints, picking the nearest
+candidate when several are in range, deciding when a ring is actually
+closed — and doing it live, on every single query that touches an area
+relation, is more fragile than it looks: this exact algorithm had a real
+premature-ring-closure bug that only showed up on one specific real,
+jagged coastline (Elliott Bay, Seattle) after passing every synthetic test
+thrown at it. The wider OSM rendering ecosystem doesn't do this assembly live
+either — `osmcoastline` assembles coastline rings once, offline, and renderers
+just read the already-valid result.
+
+When the archive's `ext` sidecar was built with `osmflat-extc --multipolygons`,
+this plugin does the same thing: `materialize_relation` reads the precomputed
+rings directly (no re-stitching) instead of calling
+`osmflat_ext::multipolygon::assemble_multipolygon` live. Confirmed
+bit-for-bit identical rendering against the live path on real data (NYC
+boroughs, Seattle water bodies including a polygon-with-a-hole case, and the
+Elliott Bay edge case) before and after this was wired in.
+
+One deliberate behavior difference: the precomputed sidecar doesn't carry a
+relation's leftover *open* chains (the rare case where some, but not all, of
+a relation's outer ways stitch into a closed ring) — only closed polygons.
+Live assembly emits those leftovers as an extra unfilled `LineString` feature
+(`closed=false`, `way_area=0`) so a diagnostic style can still see them; with
+the precomputed sidecar active, a relation with no closed polygon simply
+yields no features at all, and its "dropping relation" stderr line above
+fires even for relations that live assembly wouldn't have dropped outright.
+This never affects a style that filters by tag (nothing about those leftovers
+was going to render anyway), but a diagnostic style that renders every
+relation regardless of tags — like the water-body diagnostics used to find
+the Elliott Bay and Bowery Bay issues in the first place — will see less
+under `--multipolygons` than under live assembly. Build without
+`--multipolygons` (or query `assemble_multipolygon` directly) if you need
+those leftovers.
+
+See `osmflat-ext`'s README for the build side (`osmflat-extc --multipolygons`)
+and `osmflat_ext::multipolygon`'s module docs for the algorithm and its test
+coverage (including a regression test for the premature-closure bug).
+
+### Synthetic land polygons (`_osmflat_land=yes`)
+
+`natural=coastline` ways mark a boundary, not an area — there's no
+`natural=water`-style polygon a renderer can just fill for "everything on the
+sea side," so a style that only understands ordinary tagged areas renders open
+ocean, bays, and the water side of any coastline as blank background. This
+plugin fills that gap with a synthetic land layer: any `<Layer>` whose
+`Datasource` `tags` includes the magic pair `_osmflat_land=yes` (real OSM data
+can never carry a leading-underscore key, so this can't collide) gets back a
+`LineString` feature per land ring, closed, with `way_area` set — pair it with
+`order=way_area` and a background-color map so a plain painter's algorithm
+handles nesting (islands in bays, lakes on islands) correctly with no explicit
+hole/exterior pairing.
+
+Two sidecar sources can back this, checked in order:
+
+1. **`ext`'s `--land-polygons`** (preferred when present): rings imported at
+   build time from an external, already-closed coastline dataset — e.g.
+   osmdata.openstreetmap.de's `land-polygons` product, the same one
+   `osm2pgsql`/`openstreetmap-carto` production stacks use — reprojected from
+   Web Mercator to WGS84. Unlike coastline ring assembly below, this dataset
+   is already closed for **mainland** coastlines too (a real country's coast
+   is an open chain thousands of kilometers long across a `natural=coastline`
+   scan of any bounded extract; there's no tile/bbox frame to close it
+   against that isn't arbitrary), so this is what actually shows mainland USA
+   as land rather than leaving it as open water. Traded off against
+   `--coastline`: coarser geometry (the "simplified" variant), since it isn't
+   derived from the archive's own full-resolution `natural=coastline` ways —
+   in practice this hasn't cost visible precision even at NYC's Harlem River /
+   the Narrows or Seattle's Puget Sound shoreline (validated against both).
+2. **`ext`'s `--coastline`** (fallback when `--land-polygons` wasn't built):
+   rings assembled from the parent archive's own `natural=coastline` ways,
+   classified land/water by winding and sorted by area descending. Only ever
+   produces **closed** rings — islands, lakes fully enclosed by coastline —
+   because the ring assembler has nothing to close an open mainland chain
+   against; a sidecar built with `--coastline` alone will correctly show NYC's
+   islands and inter-borough rivers as land/water but can never show a
+   mainland coastline as land at all.
+
+See `osmflat-ext`'s README for both build sides and `osmflat_ext::coastline` /
+`osmflat_ext::land_polygons`'s module docs for the respective algorithms.
