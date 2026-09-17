@@ -55,7 +55,7 @@ rm -rf "$DIST_DIR/$name"
 mkdir -p "$DIST_DIR/$name/fonts"
 cp "$BUILD_DIR/render" "$DIST_DIR/$name/"
 cp /usr/share/fonts/dejavu/*.ttf "$DIST_DIR/$name/fonts/"
-cp LICENSE-APACHE LICENSE-MIT README.md "$DIST_DIR/$name/"
+cp LICENSE-MIT README.md "$DIST_DIR/$name/"
 
 # mapnik is LGPL-2.1 and linked into the binary, so ship its license text and
 # say where the sources and relink instructions are.
@@ -64,9 +64,7 @@ mapnik_tag="$(git -C "$BUILD_DIR/_deps/mapnik-src" describe --tags --always 2>/d
 cat > "$DIST_DIR/$name/NOTICE" <<NOTICE
 osmflat-render ${version} -- static build
 
-osmflat-mapnik-plugin itself is dual licensed MIT / Apache-2.0 (LICENSE-MIT,
-LICENSE-APACHE). Apache-2.0 is considered incompatible with LGPL-2.1, so this
-combined binary is its MIT arm linked with mapnik.
+osmflat-mapnik-plugin itself is MIT licensed (LICENSE-MIT).
 
 This binary statically links mapnik (${mapnik_tag}), which is licensed under
 the GNU Lesser General Public License v2.1 (see LICENSE.mapnik). To exercise
