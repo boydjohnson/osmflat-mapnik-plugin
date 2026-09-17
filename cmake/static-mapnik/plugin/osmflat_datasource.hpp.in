@@ -1,0 +1,13 @@
+// Generated into <mapnik>/plugins/input/osmflat by patch-mapnik.cmake.
+//
+// datasource_cache_static.cpp includes "input/<name>/<name>_datasource.hpp"
+// and expects it to declare `<name>_datasource_plugin`. Our plugin class is
+// declared in src/osmflat_datasource.cpp (for the dynamic build), so re-declare
+// it here with the same macro; the definitions stay in that .cpp.
+#pragma once
+
+#include "@OSMFLAT_SOURCE_DIR@/include/osmflat_datasource.hpp"
+
+#include <mapnik/datasource_plugin.hpp>
+
+DATASOURCE_PLUGIN_DEF(osmflat_datasource_plugin, osmflat);

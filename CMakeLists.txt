@@ -25,6 +25,15 @@ corrosion_import_crate(
     PROFILE release
 )
 
+# --- Static render (cmake -DOSMFLAT_STATIC_RENDER=ON) ------------------------
+# Builds Mapnik from source with osmflat compiled in, and a self-contained
+# `render` linked against it -- instead of the osmflat.input module below.
+option(OSMFLAT_STATIC_RENDER "Build a static Mapnik with osmflat built in, and link render against it" OFF)
+if(OSMFLAT_STATIC_RENDER)
+    include(cmake/StaticRender.cmake)
+    return()
+endif()
+
 # --- Mapnik ------------------------------------------------------------------
 find_package(PkgConfig REQUIRED)
 # Mapnik 4 is required: its API returns std::optional where 3.x returned

@@ -6,3 +6,5 @@
 # Render smoke-test output
 *.png
 /compile_commands.json
+/build-static/
+/dist/

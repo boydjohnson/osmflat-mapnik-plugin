@@ -1,0 +1,81 @@
+name: Static render
+
+# Builds a self-contained `render`: Mapnik compiled from source as a static
+# library with the osmflat datasource built in, linked fully static against
+# musl. No libmapnik, osmflat.input, or system fonts needed at runtime.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# One run per branch/PR: a new push cancels the superseded run instead of
+# queueing another full build of code nobody is waiting on. Runs on `main`
+# and tags keep their own group and are never cancelled by a later push.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    name: Static render (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: x86_64-linux-musl
+            runner: ubuntu-24.04
+          - platform: aarch64-linux-musl
+            runner: ubuntu-24.04-arm
+          - platform: aarch64-apple-darwin
+            runner: macos-14
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      # Mapnik is ~175 translation units and dominates the build (~16 min cold
+      # on x86_64), so cache the whole build tree: its fetched source + objects,
+      # the cargo registry, and the downloaded apk packages all live there.
+      # ninja/cargo decide what to redo, so a source change still rebuilds
+      # exactly what it must. The key is unique per run (caches are immutable)
+      # and restore-keys fall back to the newest cache for this arch; a new
+      # mapnik tag or changed build plumbing starts a fresh lineage.
+      - name: Cache static build tree
+        uses: actions/cache@v4
+        with:
+          path: build-static
+          key: static-render-${{ matrix.platform }}-${{ hashFiles('cmake/**', 'scripts/*.sh', 'CMakeLists.txt') }}-${{ github.run_id }}
+          restore-keys: |
+            static-render-${{ matrix.platform }}-${{ hashFiles('cmake/**', 'scripts/*.sh', 'CMakeLists.txt') }}-
+            static-render-${{ matrix.platform }}-
+
+      # Run the whole build in Alpine via `docker run` rather than a job-level
+      # `container:` -- GitHub's JavaScript actions don't run inside Alpine
+      # containers on arm64 runners, and this is exactly what a local
+      # `podman run` executes too.
+      - name: Build, test, and package (linux/musl)
+        if: runner.os == 'Linux'
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src alpine:3.22 \
+            sh scripts/build-static-render.sh
+
+      - name: Build, test, and package (macOS)
+        if: runner.os == 'macOS'
+        run: sh scripts/build-static-render-macos.sh
+
+      # The container builds as root (apk needs it), and some of what cargo
+      # leaves behind isn't readable by the runner user -- which makes the
+      # post-job cache save fail on `tar: ... Permission denied`.
+      - name: Hand the build tree back to the runner user
+        if: runner.os == 'Linux'
+        run: sudo chown -R "$(id -u):$(id -g)" build-static dist
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: osmflat-render-${{ matrix.platform }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
