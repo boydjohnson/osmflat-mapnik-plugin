@@ -6,6 +6,13 @@ on:
   pull_request:
   workflow_dispatch:
 
+# One run per branch/PR: a new push cancels the superseded run instead of
+# queueing another full build of code nobody is waiting on. Runs on `main`
+# and tags keep their own group and are never cancelled by a later push.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   ubuntu-26-04:
     name: Build & test (Ubuntu 26.04, distro mapnik)
