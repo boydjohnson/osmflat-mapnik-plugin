@@ -27,6 +27,22 @@ jobs:
       - name: Check out
         uses: actions/checkout@v4
 
+      # Mapnik is ~175 translation units and dominates the build (~16 min cold
+      # on x86_64), so cache the whole build tree: its fetched source + objects,
+      # the cargo registry, and the downloaded apk packages all live there.
+      # ninja/cargo decide what to redo, so a source change still rebuilds
+      # exactly what it must. The key is unique per run (caches are immutable)
+      # and restore-keys fall back to the newest cache for this arch; a new
+      # mapnik tag or changed build plumbing starts a fresh lineage.
+      - name: Cache static build tree
+        uses: actions/cache@v4
+        with:
+          path: build-static
+          key: static-render-${{ matrix.arch }}-${{ hashFiles('cmake/**', 'scripts/build-static-render.sh', 'CMakeLists.txt') }}-${{ github.run_id }}
+          restore-keys: |
+            static-render-${{ matrix.arch }}-${{ hashFiles('cmake/**', 'scripts/build-static-render.sh', 'CMakeLists.txt') }}-
+            static-render-${{ matrix.arch }}-
+
       # Run the whole build in Alpine via `docker run` rather than a job-level
       # `container:` -- GitHub's JavaScript actions don't run inside Alpine
       # containers on arm64 runners, and this is exactly what a local

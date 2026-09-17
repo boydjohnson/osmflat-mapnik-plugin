@@ -8,12 +8,21 @@
 #   podman run --rm -v "$PWD:/src" -w /src alpine:3.22 sh scripts/build-static-render.sh
 #
 # Output: dist/osmflat-render-<version>-<arch>-linux-musl.tar.gz
+#
+# Everything reusable lives under $BUILD_DIR (mapnik's fetched source + objects,
+# the cargo registry, downloaded apk packages) so CI can cache that one path and
+# a second run only relinks what changed.
 set -eu
 
 BUILD_DIR="${BUILD_DIR:-build-static}"
 DIST_DIR="${DIST_DIR:-dist}"
+# Absolute: cmake/cargo are invoked from various working directories.
+CARGO_HOME="${CARGO_HOME:-$PWD/$BUILD_DIR/cargo-home}"
+APK_CACHE="${APK_CACHE:-$PWD/$BUILD_DIR/apk-cache}"
+export CARGO_HOME
+mkdir -p "$APK_CACHE"
 
-apk add --no-cache \
+apk add --cache-dir "$APK_CACHE" \
     build-base cmake samurai git pkgconf curl ca-certificates linux-headers file \
     rust cargo \
     boost1.84-dev boost1.84-static \
