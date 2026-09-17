@@ -22,16 +22,20 @@ permissions:
 
 jobs:
   build:
-    name: ${{ matrix.arch }}-linux-musl
+    name: ${{ matrix.platform }}
     strategy:
-      # One arch failing shouldn't hide whether the other is healthy.
+      # One platform failing shouldn't hide whether the others are healthy.
       fail-fast: false
       matrix:
         include:
-          - arch: x86_64
+          - platform: x86_64-linux-musl
             runner: ubuntu-24.04
-          - arch: aarch64
+          - platform: aarch64-linux-musl
             runner: ubuntu-24.04-arm
+          # macOS can't link libSystem statically, so this one bundles mapnik
+          # and every third-party library but leaves macOS' own dylibs dynamic.
+          - platform: aarch64-apple-darwin
+            runner: macos-14
     runs-on: ${{ matrix.runner }}
 
     steps:
@@ -58,16 +62,26 @@ jobs:
       # No build cache here, unlike the CI workflow: a published binary should
       # come from a clean build of the tagged tree, not a tree carried over
       # from an earlier run.
-      - name: Build, test, and package
+      - name: Build, test, and package (linux/musl)
+        if: runner.os == 'Linux'
         run: |
           docker run --rm -e OSMFLAT_RENDER_VERSION -v "$PWD:/src" -w /src alpine:3.22 \
             sh scripts/build-static-render.sh
         env:
           OSMFLAT_RENDER_VERSION: ${{ steps.version.outputs.version }}
 
+      - name: Build, test, and package (macOS)
+        if: runner.os == 'macOS'
+        run: sh scripts/build-static-render-macos.sh
+        env:
+          OSMFLAT_RENDER_VERSION: ${{ steps.version.outputs.version }}
+
       # Catches an archive that built but can't run on a machine with none of
       # the build dependencies present -- the whole point of a static binary.
+      # (macOS is covered by the otool check inside its build script, since
+      # there's no dependency-free macOS sandbox to unpack into here.)
       - name: Smoke test the packaged archive
+        if: runner.os == 'Linux'
         run: |
           set -euo pipefail
           docker run --rm -v "$PWD:/src:ro" alpine:3.22 sh -c '
@@ -80,7 +94,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: osmflat-render-${{ matrix.arch }}-linux-musl
+          name: osmflat-render-${{ matrix.platform }}
           path: dist/*.tar.gz
           if-no-files-found: error
 

@@ -65,7 +65,15 @@ cmake -S . -B build-static -DCMAKE_BUILD_TYPE=Release \
 cmake --build build-static --target render
 ```
 
-`OSMFLAT_FULLY_STATIC=ON` adds `-static` (musl only: libc goes in too). The
+`OSMFLAT_FULLY_STATIC=ON` adds `-static` (musl only: libc goes in too). On
+macOS, leave it off -- libSystem can't be linked statically, so mapnik and
+every third-party library go in but macOS' own dylibs and frameworks stay
+dynamic; `scripts/build-static-render-macos.sh` builds that and fails if
+`otool -L` shows anything outside `/usr/lib` or `/System`. Two macOS
+wrinkles it handles: Homebrew's `libharfbuzz.a` needs graphite2, which has no
+static archive, so harfbuzz is built from source with just freetype and
+CoreText; and icu4c/zlib/bzip2 are keg-only, so their prefixes are passed
+explicitly. The
 `<plugin_dir>` argument stays in the CLI but is ignored — loading a `.input`
 module would pull in a second, shared mapnik.
 
@@ -98,9 +106,10 @@ podman run --rm -v "$PWD:/src" -w /src alpine:3.22 sh scripts/build-static-rende
 ```
 
 `.github/workflows/static-render.yml` runs that same script under `docker run`
-for x86_64 and aarch64 and uploads both tarballs, caching the build tree
+for x86_64 and aarch64, plus the macOS script on `macos-14`, and uploads all
+three tarballs, caching the build tree
 (mapnik is ~16 min cold, ~1 min warm). `.github/workflows/release.yml` builds
-the same two archives from a clean tree on a `v*` tag — the tag has to match
+the same three archives from a clean tree on a `v*` tag — the tag has to match
 `project(... VERSION)` — smoke-tests each unpacked archive on a bare alpine
 image, and publishes them with a `SHA256SUMS`. `workflow_dispatch` on that
 workflow builds without publishing, to check an arch before cutting the tag.

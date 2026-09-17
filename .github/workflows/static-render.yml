@@ -18,16 +18,18 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  linux-musl:
-    name: Static render (${{ matrix.arch }}-linux-musl)
+  build:
+    name: Static render (${{ matrix.platform }})
     strategy:
       fail-fast: false
       matrix:
         include:
-          - arch: x86_64
+          - platform: x86_64-linux-musl
             runner: ubuntu-24.04
-          - arch: aarch64
+          - platform: aarch64-linux-musl
             runner: ubuntu-24.04-arm
+          - platform: aarch64-apple-darwin
+            runner: macos-14
     runs-on: ${{ matrix.runner }}
 
     steps:
@@ -45,29 +47,35 @@ jobs:
         uses: actions/cache@v4
         with:
           path: build-static
-          key: static-render-${{ matrix.arch }}-${{ hashFiles('cmake/**', 'scripts/build-static-render.sh', 'CMakeLists.txt') }}-${{ github.run_id }}
+          key: static-render-${{ matrix.platform }}-${{ hashFiles('cmake/**', 'scripts/*.sh', 'CMakeLists.txt') }}-${{ github.run_id }}
           restore-keys: |
-            static-render-${{ matrix.arch }}-${{ hashFiles('cmake/**', 'scripts/build-static-render.sh', 'CMakeLists.txt') }}-
-            static-render-${{ matrix.arch }}-
+            static-render-${{ matrix.platform }}-${{ hashFiles('cmake/**', 'scripts/*.sh', 'CMakeLists.txt') }}-
+            static-render-${{ matrix.platform }}-
 
       # Run the whole build in Alpine via `docker run` rather than a job-level
       # `container:` -- GitHub's JavaScript actions don't run inside Alpine
       # containers on arm64 runners, and this is exactly what a local
       # `podman run` executes too.
-      - name: Build, test, and package
+      - name: Build, test, and package (linux/musl)
+        if: runner.os == 'Linux'
         run: |
           docker run --rm -v "$PWD:/src" -w /src alpine:3.22 \
             sh scripts/build-static-render.sh
+
+      - name: Build, test, and package (macOS)
+        if: runner.os == 'macOS'
+        run: sh scripts/build-static-render-macos.sh
 
       # The container builds as root (apk needs it), and some of what cargo
       # leaves behind isn't readable by the runner user -- which makes the
       # post-job cache save fail on `tar: ... Permission denied`.
       - name: Hand the build tree back to the runner user
+        if: runner.os == 'Linux'
         run: sudo chown -R "$(id -u):$(id -g)" build-static dist
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: osmflat-render-${{ matrix.arch }}-linux-musl
+          name: osmflat-render-${{ matrix.platform }}
           path: dist/*.tar.gz
           if-no-files-found: error

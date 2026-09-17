@@ -7,6 +7,11 @@
 
 set(OSMFLAT_MAPNIK_GIT_TAG "v4.2.2" CACHE STRING "Mapnik tag to build statically")
 option(OSMFLAT_FULLY_STATIC "Link render with -static (Linux/musl: no shared libs at all)" OFF)
+set(OSMFLAT_HARFBUZZ_GIT_TAG "11.2.1" CACHE STRING "harfbuzz tag built from source on macOS")
+
+if(APPLE AND OSMFLAT_FULLY_STATIC)
+    message(FATAL_ERROR "OSMFLAT_FULLY_STATIC needs musl; macOS always links libSystem dynamically")
+endif()
 
 # --- Mapnik build options ----------------------------------------------------
 # Only what `render` uses: the AGG renderer writing PNG, fonts via FreeType +
@@ -65,6 +70,75 @@ endforeach()
 # Static dependency archives (libicuuc.a, libfreetype.a, ...) rather than .so.
 set(Boost_USE_STATIC_LIBS ON)
 set(ICU_USE_STATIC_LIBS ON)
+
+if(APPLE)
+    # Everything third-party goes in; only macOS' own dylibs stay dynamic.
+    set(CMAKE_FIND_LIBRARY_SUFFIXES .a)
+    # Homebrew's Boost::regex names icu libs as bare `icuuc`/`icudata`/... which
+    # the linker can't resolve (icu4c is keg-only) and which would anyway pick
+    # the dylib over the archive. Mapnik's own workaround drops them; it links
+    # ICU::uc/data/i18n itself, by full path to the .a.
+    set(USE_BOOST_REGEX_ICU_WORKAROUND ON CACHE BOOL "" FORCE)
+    # Homebrew keeps icu4c, zlib and bzip2 keg-only: their archives aren't
+    # symlinked into the prefix, so nothing finds libicuuc.a / libz.a /
+    # libbz2.a without being told where they live.
+    find_program(OSMFLAT_BREW brew)
+    if(OSMFLAT_BREW)
+        if(NOT ICU_ROOT AND NOT DEFINED ENV{ICU_ROOT})
+            # Homebrew versions icu4c; take whichever of these is installed.
+            foreach(icu_formula icu4c@76 icu4c@77 icu4c)
+                if(NOT ICU_ROOT)
+                    execute_process(COMMAND ${OSMFLAT_BREW} --prefix ${icu_formula}
+                        OUTPUT_VARIABLE ICU_ROOT OUTPUT_STRIP_TRAILING_WHITESPACE
+                        ERROR_QUIET)
+                endif()
+            endforeach()
+        endif()
+        foreach(keg zlib bzip2)
+            execute_process(COMMAND ${OSMFLAT_BREW} --prefix ${keg}
+                OUTPUT_VARIABLE keg_prefix OUTPUT_STRIP_TRAILING_WHITESPACE
+                ERROR_QUIET)
+            if(keg_prefix)
+                list(APPEND CMAKE_PREFIX_PATH "${keg_prefix}")
+            endif()
+        endforeach()
+    endif()
+
+    # Homebrew's libharfbuzz.a is built against glib and graphite2, and
+    # graphite2 has no static archive -- so a binary using it would still need
+    # Homebrew at runtime. Build harfbuzz ourselves instead, with just freetype
+    # and CoreText, which drops glib/graphite2/pcre2/intl entirely.
+    set(HB_HAVE_FREETYPE ON CACHE BOOL "" FORCE)
+    set(HB_HAVE_CORETEXT ON CACHE BOOL "" FORCE)
+    set(HB_HAVE_GLIB OFF CACHE BOOL "" FORCE)
+    set(HB_HAVE_GRAPHITE2 OFF CACHE BOOL "" FORCE)
+    set(HB_HAVE_ICU OFF CACHE BOOL "" FORCE)
+    set(HB_BUILD_SUBSET OFF CACHE BOOL "" FORCE)
+    set(HB_BUILD_UTILS OFF CACHE BOOL "" FORCE)
+    set(HB_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(
+        harfbuzz
+        GIT_REPOSITORY https://github.com/harfbuzz/harfbuzz.git
+        GIT_TAG ${OSMFLAT_HARFBUZZ_GIT_TAG}
+        GIT_SHALLOW TRUE
+        EXCLUDE_FROM_ALL
+    )
+    FetchContent_MakeAvailable(harfbuzz)
+
+    # Mapnik looks for harfbuzz with find_package(CONFIG) and expects a
+    # harfbuzz::harfbuzz target. Point that lookup at a generated config that
+    # aliases the target we just built, so it never sees Homebrew's (which
+    # would also collide on the target name).
+    set(shim "${CMAKE_BINARY_DIR}/harfbuzz-config-shim")
+    file(WRITE "${shim}/harfbuzzConfig.cmake"
+"set(harfbuzz_FOUND TRUE)
+set(harfbuzz_VERSION \"${OSMFLAT_HARFBUZZ_GIT_TAG}\")
+if(NOT TARGET harfbuzz::harfbuzz)
+    add_library(harfbuzz::harfbuzz ALIAS harfbuzz)
+endif()
+")
+    set(harfbuzz_DIR "${shim}" CACHE PATH "" FORCE)
+endif()
 if(OSMFLAT_FULLY_STATIC)
     set(CMAKE_FIND_LIBRARY_SUFFIXES .a)
     # --static so pkg-config also reports Libs.private (harfbuzz needs glib,
@@ -124,6 +198,18 @@ add_executable(render test/render.cpp)
 # mapnik::mapnik before osmflat_capi: libmapnik.a references the Rust symbols,
 # and single-pass linkers resolve left to right.
 target_link_libraries(render PRIVATE mapnik::mapnik osmflat_capi)
+if(APPLE)
+    # Homebrew's libfreetype.a carries its bzip2/brotli font decompressors, but
+    # FindFreetype reports only the archive itself.
+    find_library(OSMFLAT_BZ2_LIBRARY NAMES bz2)
+    find_library(OSMFLAT_BROTLIDEC_LIBRARY NAMES brotlidec)
+    find_library(OSMFLAT_BROTLICOMMON_LIBRARY NAMES brotlicommon)
+    foreach(lib OSMFLAT_BZ2_LIBRARY OSMFLAT_BROTLIDEC_LIBRARY OSMFLAT_BROTLICOMMON_LIBRARY)
+        if(${lib})
+            target_link_libraries(render PRIVATE ${${lib}})
+        endif()
+    endforeach()
+endif()
 target_compile_definitions(render PRIVATE OSMFLAT_STATIC_RENDER)
 if(OSMFLAT_FULLY_STATIC)
     target_link_options(render PRIVATE -static)

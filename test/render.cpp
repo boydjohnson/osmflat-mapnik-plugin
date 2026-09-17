@@ -20,6 +20,10 @@
 
 #include <cstdlib>
 #include <filesystem>
+#ifdef __APPLE__
+#include <climits>
+#include <mach-o/dyld.h>
+#endif
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -39,8 +43,20 @@ static std::string slurp(const std::string& path)
 static std::string executable_dir(const char* argv0)
 {
     std::error_code ec;
-    std::filesystem::path exe = std::filesystem::read_symlink("/proc/self/exe", ec);
+    std::filesystem::path exe;
+#ifdef __APPLE__
+    char buf[PATH_MAX];
+    uint32_t size = sizeof(buf);
+    if (_NSGetExecutablePath(buf, &size) == 0) {
+        exe = std::filesystem::canonical(buf, ec);
+    } else {
+        ec = std::make_error_code(std::errc::filename_too_long);
+    }
+#else
+    exe = std::filesystem::read_symlink("/proc/self/exe", ec);
+#endif
     if (ec) {
+        ec.clear();
         exe = std::filesystem::canonical(argv0, ec);
     }
     return ec ? std::string(".") : exe.parent_path().string();
