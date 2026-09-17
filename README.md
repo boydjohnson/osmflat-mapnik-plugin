@@ -98,7 +98,15 @@ podman run --rm -v "$PWD:/src" -w /src alpine:3.22 sh scripts/build-static-rende
 ```
 
 `.github/workflows/static-render.yml` runs that same script under `docker run`
-for x86_64 and aarch64 and uploads both tarballs.
+for x86_64 and aarch64 and uploads both tarballs, caching the build tree
+(mapnik is ~16 min cold, ~1 min warm). `.github/workflows/release.yml` builds
+the same two archives from a clean tree on a `v*` tag — the tag has to match
+`project(... VERSION)` — smoke-tests each unpacked archive on a bare alpine
+image, and publishes them with a `SHA256SUMS`. `workflow_dispatch` on that
+workflow builds without publishing, to check an arch before cutting the tag.
+
+Each archive carries `render`, `fonts/`, mapnik's `LICENSE.mapnik`, and a
+`NOTICE` naming every statically linked library and how to relink.
 
 **Licensing:** mapnik is LGPL-2.1, so a distributed binary with mapnik linked
 in must let recipients relink it against a modified mapnik — publishing these

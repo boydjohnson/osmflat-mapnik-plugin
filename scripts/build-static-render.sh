@@ -47,11 +47,42 @@ fi
 
 MAPNIK_FONT_DIR=/usr/share/fonts/dejavu ctest --test-dir "$BUILD_DIR" --output-on-failure
 
-version="$(sed -n 's/^project(osmflat-mapnik-plugin VERSION \([^ )]*\).*/\1/p' CMakeLists.txt)"
+# A tag build passes the tag's version so the archive name matches the release;
+# otherwise take the project version.
+version="${OSMFLAT_RENDER_VERSION:-$(sed -n 's/^project(osmflat-mapnik-plugin VERSION \([^ )]*\).*/\1/p' CMakeLists.txt)}"
 name="osmflat-render-${version}-$(uname -m)-linux-musl"
 rm -rf "$DIST_DIR/$name"
 mkdir -p "$DIST_DIR/$name/fonts"
 cp "$BUILD_DIR/render" "$DIST_DIR/$name/"
 cp /usr/share/fonts/dejavu/*.ttf "$DIST_DIR/$name/fonts/"
+
+# mapnik is LGPL-2.1 and linked into the binary, so ship its license text and
+# say where the sources and relink instructions are.
+cp "$BUILD_DIR/_deps/mapnik-src/COPYING" "$DIST_DIR/$name/LICENSE.mapnik"
+mapnik_tag="$(git -C "$BUILD_DIR/_deps/mapnik-src" describe --tags --always 2>/dev/null || echo unknown)"
+cat > "$DIST_DIR/$name/NOTICE" <<NOTICE
+osmflat-render ${version} -- static build
+
+This binary statically links mapnik (${mapnik_tag}), which is licensed under
+the GNU Lesser General Public License v2.1 (see LICENSE.mapnik). To exercise
+your right to relink it against a modified mapnik, build from source:
+
+  https://github.com/boydjohnson/osmflat-mapnik-plugin
+  cmake -S . -B build-static -DCMAKE_BUILD_TYPE=Release \\
+      -DOSMFLAT_STATIC_RENDER=ON -DOSMFLAT_FULLY_STATIC=ON
+  cmake --build build-static --target render
+
+scripts/build-static-render.sh reproduces this exact archive in an alpine
+container, and cmake/static-mapnik/ holds the patches applied to the mapnik
+source tree.
+
+Also linked in: boost (BSL-1.0), ICU (Unicode-3.0), freetype (FTL), harfbuzz
+(MIT), libpng (PNG-2.0), zlib (Zlib), glib (LGPL-2.1), graphite2 (LGPL-2.1),
+brotli (MIT), bzip2 (bzip2-1.0.6), pcre2 (BSD-3-Clause), musl (MIT).
+
+fonts/ contains the DejaVu fonts (Bitstream Vera / public-domain derived):
+https://dejavu-fonts.github.io/License.html
+NOTICE
+
 tar -C "$DIST_DIR" -czf "$DIST_DIR/$name.tar.gz" "$name"
 ls -lh "$DIST_DIR/$name/render" "$DIST_DIR/$name.tar.gz"

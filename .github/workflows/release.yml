@@ -1,0 +1,119 @@
+name: release
+
+# Tagging `v*` publishes a release with a static `render` for each
+# architecture. `workflow_dispatch` builds the same matrix without publishing,
+# which is the only way to find out that an arch broke before a tag is already
+# cut and public.
+#
+# Linux/musl only: a fully static binary needs musl, and macOS can't link
+# libSystem statically (see the static-render section of the README).
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish a GitHub release (off = build and upload artifacts only)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.arch }}-linux-musl
+    strategy:
+      # One arch failing shouldn't hide whether the other is healthy.
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # A tag's archive is named after the tag, so the two can't drift; a
+      # dispatch run falls back to the project version in CMakeLists.txt.
+      - name: Resolve version
+        id: version
+        run: |
+          set -euo pipefail
+          project="$(sed -n 's/^project(osmflat-mapnik-plugin VERSION \([^ )]*\).*/\1/p' CMakeLists.txt)"
+          if [ "${GITHUB_REF_TYPE}" = tag ]; then
+            version="${GITHUB_REF_NAME#v}"
+            if [ "$version" != "$project" ]; then
+              echo "tag $GITHUB_REF_NAME does not match project VERSION $project" >&2
+              exit 1
+            fi
+          else
+            version="$project"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      # No build cache here, unlike the CI workflow: a published binary should
+      # come from a clean build of the tagged tree, not a tree carried over
+      # from an earlier run.
+      - name: Build, test, and package
+        run: |
+          docker run --rm -e OSMFLAT_RENDER_VERSION -v "$PWD:/src" -w /src alpine:3.22 \
+            sh scripts/build-static-render.sh
+        env:
+          OSMFLAT_RENDER_VERSION: ${{ steps.version.outputs.version }}
+
+      # Catches an archive that built but can't run on a machine with none of
+      # the build dependencies present -- the whole point of a static binary.
+      - name: Smoke test the packaged archive
+        run: |
+          set -euo pipefail
+          docker run --rm -v "$PWD:/src:ro" alpine:3.22 sh -c '
+            set -eu
+            cd /tmp && tar xzf /src/dist/*.tar.gz && cd osmflat-render-*-linux-musl
+            ./render /no/plugins /src/test/style-relations.xml \
+              /src/test/fixtures/baarle-hertog.osm.flat /tmp/out.png \
+              4.75 51.38 5.02 51.49 500 500
+            test -s /tmp/out.png'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: osmflat-render-${{ matrix.arch }}-linux-musl
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  release:
+    name: publish
+    needs: build
+    # Only a tag publishes. A dispatch run stops after `build`, leaving the
+    # archives downloadable from the run for inspection.
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      # One checksum file over every archive, so a download can be verified
+      # without trusting the transport.
+      - name: Checksums
+        run: |
+          cd artifacts
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          gh release create "$tag" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$tag" \
+            --generate-notes \
+            artifacts/*
