@@ -51,6 +51,59 @@ there means building mapnik from source.
 crate, so a clone of this repo builds on its own — no sibling checkouts — but
 the first build needs network access for cargo to fetch them.
 
+## Static, self-contained `render`
+
+`-DOSMFLAT_STATIC_RENDER=ON` builds mapnik from source (v4.2.2 by default) as a
+**static** library with the osmflat datasource compiled in as a built-in
+plugin, and links `render` against it. The result loads nothing at runtime — no
+`libmapnik`, no `osmflat.input`, no system fonts — so it can be copied to a
+machine that has never heard of mapnik:
+
+```sh
+cmake -S . -B build-static -DCMAKE_BUILD_TYPE=Release \
+    -DOSMFLAT_STATIC_RENDER=ON -DOSMFLAT_FULLY_STATIC=ON
+cmake --build build-static --target render
+```
+
+`OSMFLAT_FULLY_STATIC=ON` adds `-static` (musl only: libc goes in too). The
+`<plugin_dir>` argument stays in the CLI but is ignored — loading a `.input`
+module would pull in a second, shared mapnik.
+
+Mapnik's static-plugin table is compile-time, so
+`cmake/static-mapnik/patch-mapnik.cmake` edits the fetched mapnik tree: it adds
+`plugins/input/osmflat`, links it into `libmapnik`, registers it in
+`datasource_cache_static.cpp`, and teaches `projection` to accept
+`+proj=longlat ...` (see below). Every edit anchors on an exact upstream string
+and fails loudly if mapnik moved it.
+
+Trimmed to what `render` needs: AGG + PNG, freetype/harfbuzz/ICU for text. No
+cairo, PROJ, grid/SVG renderers, or stock input plugins. Dropping PROJ is what
+keeps the binary free of a 9 MB `proj.db`, but mapnik then only knows
+`epsg:4326` / `epsg:3857` by name — and, more subtly, classifies `epsg:4326` as
+*geographic*, which scales `scale_denominator` by ~111319 versus what PROJ
+reports for the equivalent `+proj=longlat +datum=WGS84 +no_defs`. Since every
+style here is tuned against the degree-based numbers (`0.1` ≈ neighborhood),
+the patch makes a PROJ-less mapnik classify `+proj=longlat` exactly as PROJ
+does, so styles render identically either way. Other proj4 strings still throw.
+
+Fonts: `$MAPNIK_FONT_DIR` if set, else `fonts/` beside the binary (which is how
+the release tarball ships DejaVu).
+
+`scripts/build-static-render.sh` does the whole thing in Alpine — installs the
+static dependency archives, builds, runs ctest, and packages
+`dist/osmflat-render-<version>-<arch>-linux-musl.tar.gz`:
+
+```sh
+podman run --rm -v "$PWD:/src" -w /src alpine:3.22 sh scripts/build-static-render.sh
+```
+
+`.github/workflows/static-render.yml` runs that same script under `docker run`
+for x86_64 and aarch64 and uploads both tarballs.
+
+**Licensing:** mapnik is LGPL-2.1, so a distributed binary with mapnik linked
+in must let recipients relink it against a modified mapnik — publishing these
+sources plus the build scripts is what covers that.
+
 ## Datasource parameters
 
 | param      | required | values              | meaning                          |

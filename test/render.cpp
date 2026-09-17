@@ -19,6 +19,7 @@
 #include <mapnik/geometry/box2d.hpp>
 
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -31,6 +32,20 @@ static std::string slurp(const std::string& path)
     ss << in.rdbuf();
     return ss.str();
 }
+
+#ifdef OSMFLAT_STATIC_RENDER
+// Directory holding the running executable, following symlinks (e.g. a
+// /usr/local/bin/render link into an unpacked release tarball).
+static std::string executable_dir(const char* argv0)
+{
+    std::error_code ec;
+    std::filesystem::path exe = std::filesystem::read_symlink("/proc/self/exe", ec);
+    if (ec) {
+        exe = std::filesystem::canonical(argv0, ec);
+    }
+    return ec ? std::string(".") : exe.parent_path().string();
+}
+#endif
 
 int main(int argc, char** argv)
 {
@@ -59,12 +74,24 @@ int main(int argc, char** argv)
         }
 
         mapnik::setup();
+#ifdef OSMFLAT_STATIC_RENDER
+        // osmflat is compiled into this binary's static libmapnik. Loading
+        // .input modules from disk would pull in a second, shared libmapnik,
+        // so plugin_dir is accepted (for a stable CLI) but ignored.
+        (void)plugin_dir;
+#else
         mapnik::datasource_cache::instance().register_datasources(plugin_dir);
+#endif
         // Register bundled DejaVu fonts so TextSymbolizer can resolve face-name.
         if (const char* fd = std::getenv("MAPNIK_FONT_DIR")) {
             mapnik::freetype_engine::register_fonts(fd, true);
         } else {
+#ifdef OSMFLAT_STATIC_RENDER
+            // The release tarball ships DejaVu in fonts/ beside the binary.
+            mapnik::freetype_engine::register_fonts(executable_dir(argv[0]) + "/fonts", true);
+#else
             mapnik::freetype_engine::register_fonts("/opt/homebrew/lib/mapnik/fonts", true);
+#endif
         }
 
         std::string xml = slurp(style_xml);

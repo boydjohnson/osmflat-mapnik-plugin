@@ -1,0 +1,44 @@
+name: Static render
+
+# Builds a self-contained `render`: Mapnik compiled from source as a static
+# library with the osmflat datasource built in, linked fully static against
+# musl. No libmapnik, osmflat.input, or system fonts needed at runtime.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  linux-musl:
+    name: Static render (${{ matrix.arch }}-linux-musl)
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      # Run the whole build in Alpine via `docker run` rather than a job-level
+      # `container:` -- GitHub's JavaScript actions don't run inside Alpine
+      # containers on arm64 runners, and this is exactly what a local
+      # `podman run` executes too.
+      - name: Build, test, and package
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src alpine:3.22 \
+            sh scripts/build-static-render.sh
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: osmflat-render-${{ matrix.arch }}-linux-musl
+          path: dist/*.tar.gz
+          if-no-files-found: error
