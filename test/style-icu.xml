@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Exercises the two things that need ICU's data, not just its code:
+     - a regex filter: Boost.Regex's ICU traits load ICU resources when the
+       expression is parsed, and throw "Could not initialize ICU resources"
+       (fatal: the style fails to load) without them;
+     - a wrapped label: wrap-width asks ICU for a line BreakIterator, which
+       without data logs "could not create BreakIterator" and doesn't wrap.
+     Renders the baarle-hertog fixture's named areas. Used by the static
+     build's render_icu_data test and the release smoke test. -->
+<Map background-color="#ffffff" srs="+proj=longlat +datum=WGS84 +no_defs">
+  <Style name="named">
+    <Rule>
+      <Filter>[name].match('(?i).*(baarle|hertog).*')</Filter>
+      <PolygonSymbolizer fill="#dde8f0"/>
+      <LineSymbolizer stroke="#4a6a8a" stroke-width="0.8"/>
+      <TextSymbolizer face-name="DejaVu Sans Book" size="13" fill="#1d2a36"
+                      halo-fill="#ffffff" halo-radius="1.5" wrap-width="40"
+                      placement="interior">[name].replace('-', ' - ')</TextSymbolizer>
+    </Rule>
+  </Style>
+  <Layer name="named" srs="+proj=longlat +datum=WGS84 +no_defs">
+    <StyleName>named</StyleName>
+    <Datasource>
+      <Parameter name="type">osmflat</Parameter>
+      <Parameter name="file">@ARCHIVE@</Parameter>
+      <Parameter name="osm_type">way,relation</Parameter>
+    </Datasource>
+  </Layer>
+</Map>

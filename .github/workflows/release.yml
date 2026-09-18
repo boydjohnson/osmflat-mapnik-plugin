@@ -111,7 +111,22 @@ jobs:
             ./render /no/plugins /src/test/style-relations-rd.xml \
               /src/test/fixtures/baarle-hertog.osm.flat /tmp/rd.png \
               110639 376952 129497 389060 600 385
-            test "$(wc -c < /tmp/rd.png)" -gt 8000'
+            test "$(wc -c < /tmp/rd.png)" -gt 8000
+            # Regex filter + wrapped label need ICU data, which on linux is
+            # embedded (the Alpine libicudata.a is a stub). No ICU data exists
+            # on this image, so a missing copy fails here rather than for users.
+            # (Explicit if, not `! grep`: set -e ignores negated commands.)
+            test -z "$(ls /usr/share/icu 2>/dev/null)"
+            rc=0
+            out="$(./render /no/plugins /src/test/style-icu.xml \
+              /src/test/fixtures/baarle-hertog.osm.flat /tmp/icu.png \
+              4.75 51.38 5.02 51.49 500 500 2>&1)" || rc=$?
+            echo "$out"
+            if [ "$rc" -ne 0 ] || echo "$out" | grep -qE "BreakIterator|ICU resources|exception"; then
+              echo "ICU data missing from the archive" >&2
+              exit 1
+            fi
+            test "$(wc -c < /tmp/icu.png)" -gt 4000'
 
       - uses: actions/upload-artifact@v4
         with:

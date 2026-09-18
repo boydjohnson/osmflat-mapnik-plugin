@@ -250,7 +250,35 @@ if(OSMFLAT_FULLY_STATIC)
 endif()
 
 # --- render ------------------------------------------------------------------
+# ICU's data (break iterators for label wrapping, the tables Boost.Regex's ICU
+# traits need for any .match()/.replace() filter) normally lives in
+# libicudata.a. Alpine builds ICU with archive packaging, so its libicudata.a
+# is a ~1 KB stub and the data is a separate icudt<ver>l.dat that a relocated
+# binary can't find -- regex filters then throw "Could not initialize ICU
+# resources" and wrapping logs "could not create BreakIterator". Pointing
+# OSMFLAT_ICU_DATA_FILE at that .dat embeds it; it has to be the same ICU
+# version the binary links, which it is when both come from one distro.
+set(OSMFLAT_ICU_DATA_FILE "" CACHE FILEPATH
+    "ICU common data (.dat) to embed in render, for stub-libicudata builds (Alpine)")
+if(OSMFLAT_ICU_DATA_FILE)
+    if(APPLE)
+        message(FATAL_ERROR "OSMFLAT_ICU_DATA_FILE is ELF-only; Homebrew's libicudata.a already carries the data")
+    endif()
+    if(NOT EXISTS "${OSMFLAT_ICU_DATA_FILE}")
+        message(FATAL_ERROR "OSMFLAT_ICU_DATA_FILE does not exist: ${OSMFLAT_ICU_DATA_FILE}")
+    endif()
+    enable_language(ASM)
+    configure_file(${CMAKE_SOURCE_DIR}/cmake/icu-data.S.in ${CMAKE_BINARY_DIR}/icu-data.S @ONLY)
+    # .incbin isn't a dependency CMake can see; rebuild when the .dat changes.
+    set_source_files_properties(${CMAKE_BINARY_DIR}/icu-data.S PROPERTIES
+        OBJECT_DEPENDS "${OSMFLAT_ICU_DATA_FILE}")
+endif()
+
 add_executable(render test/render.cpp)
+if(OSMFLAT_ICU_DATA_FILE)
+    target_sources(render PRIVATE ${CMAKE_BINARY_DIR}/icu-data.S)
+    target_compile_definitions(render PRIVATE OSMFLAT_EMBEDDED_ICU_DATA)
+endif()
 # mapnik::mapnik before osmflat_capi: libmapnik.a references the Rust symbols,
 # and single-pass linkers resolve left to right.
 target_link_libraries(render PRIVATE mapnik::mapnik osmflat_capi)
@@ -284,6 +312,20 @@ add_test(NAME render_relations
 # the Bessel ellipsoid): exercises PROJ end to end -- the EPSG lookup has to
 # come from the proj.db embedded in the binary, since the smoke test runs where
 # no proj.db exists. The bbox is the render_relations one, transformed.
+# ICU data, not just code: a regex filter plus a wrapped label (see
+# test/style-icu.xml). ICU_DATA points at nothing so a distro's data dir in the
+# build environment can't mask a binary that lacks its own data -- which is
+# exactly how this slipped through on Alpine before.
+set(_icu_png ${CMAKE_BINARY_DIR}/render_icu_data.png)
+add_test(NAME render_icu_data
+    COMMAND ${CMAKE_COMMAND}
+        -DRENDER=$<TARGET_FILE:render> -DOUT=${_icu_png} -DMIN_BYTES=4000
+        "-DFORBID=BreakIterator|ICU resources|U_MISSING_RESOURCE_ERROR"
+        "-DARGS=${CMAKE_BINARY_DIR}/no-plugins;${CMAKE_SOURCE_DIR}/test/style-icu.xml;${FIXTURES}/baarle-hertog.osm.flat;${_icu_png};4.75;51.38;5.02;51.49;500;500"
+        -P ${CMAKE_SOURCE_DIR}/cmake/check-render.cmake)
+set_tests_properties(render_icu_data PROPERTIES
+    ENVIRONMENT "ICU_DATA=${CMAKE_BINARY_DIR}/no-icu-data")
+
 set(_rd_png ${CMAKE_BINARY_DIR}/render_relations_rd.png)
 add_test(NAME render_relations_projected
     COMMAND ${CMAKE_COMMAND}

@@ -87,6 +87,22 @@ Trimmed to what `render` needs: AGG + PNG, freetype/harfbuzz/ICU for text,
 Boost.Regex for `.match()`/`.replace()` in filters, and PROJ for reprojection.
 No cairo, grid/SVG renderers, or stock input plugins.
 
+ICU needs its *data*, not just its code: Boost.Regex's ICU traits load it
+when a `.match()`/`.replace()` expression is parsed (without it the style
+fails with "Could not initialize ICU resources"), and `wrap-width` labels need
+its line BreakIterator ("could not create BreakIterator", and no wrapping).
+Homebrew's `libicudata.a` carries the full data, so macOS gets it by linking.
+Alpine's is a ~1 KB stub with the data in a separate `icudt<ver>l.dat`, so
+the linux build embeds `icu-data-full`'s `.dat` into `render`
+(`OSMFLAT_ICU_DATA_FILE`, `cmake/icu-data.S.in`) and registers it with
+`udata_setCommonData()` at startup. That copy wins over `ICU_DATA` and any
+host ICU, so a host's different ICU version doesn't matter. It costs ~30 MB
+of binary (~12 MB in the tarball); `icu-data-en` would be ~3 MB but drops
+non-English locales and the dictionary-based line breakers for Thai, Lao,
+Khmer, Burmese and CJK. `render_icu_data` runs with `ICU_DATA` pointed at
+nothing, so a data dir in the build environment can't mask a binary that
+lacks its own.
+
 PROJ (9.9.0) is built from source on every platform with libtiff and libcurl
 off — Alpine's and Homebrew's builds pull both in (and OpenSSL behind curl)
 only to read and download datum-shift grids. Without grids, a transformation

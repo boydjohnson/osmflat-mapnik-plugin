@@ -32,12 +32,21 @@ apk add --cache-dir "$APK_CACHE" \
     harfbuzz-dev harfbuzz-static graphite2-static glib-static pcre2-static \
     libpng-dev libpng-static zlib-dev zlib-static bzip2-static brotli-static expat-static \
     sqlite sqlite-dev sqlite-static \
+    icu-data-full \
     font-dejavu
+
+# Alpine's libicudata.a is a stub; the real data is this .dat, embedded into
+# render (see cmake/StaticRender.cmake). icu-data-full rather than the default
+# icu-data-en: all locales and the dictionary-based line breakers (Thai, Lao,
+# Khmer, Burmese, CJK), matching what Homebrew's libicudata.a gives macOS.
+icu_dat="$(ls /usr/share/icu/*/icudt*l.dat)"
+[ "$(echo "$icu_dat" | wc -l)" -eq 1 ] || { echo "error: expected one ICU .dat, got: $icu_dat" >&2; exit 1; }
 
 cmake -S . -B "$BUILD_DIR" -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
     -DOSMFLAT_STATIC_RENDER=ON \
-    -DOSMFLAT_FULLY_STATIC=ON
+    -DOSMFLAT_FULLY_STATIC=ON \
+    -DOSMFLAT_ICU_DATA_FILE="$icu_dat"
 cmake --build "$BUILD_DIR" --target render --parallel "$(nproc)"
 strip "$BUILD_DIR/render"
 
