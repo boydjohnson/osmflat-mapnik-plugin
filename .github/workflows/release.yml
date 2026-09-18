@@ -90,7 +90,14 @@ jobs:
             ./render /no/plugins /src/test/style-relations.xml \
               /src/test/fixtures/baarle-hertog.osm.flat /tmp/out.png \
               4.75 51.38 5.02 51.49 500 500
-            test -s /tmp/out.png'
+            test -s /tmp/out.png
+            # Reprojected into EPSG:28992: the EPSG lookup can only come from
+            # the proj.db embedded in the binary -- there is none on this image.
+            test -z "$(find / -name proj.db -not -path "/src/*" 2>/dev/null)"
+            ./render /no/plugins /src/test/style-relations-rd.xml \
+              /src/test/fixtures/baarle-hertog.osm.flat /tmp/rd.png \
+              110639 376952 129497 389060 600 385
+            test "$(wc -c < /tmp/rd.png)" -gt 8000'
 
       - uses: actions/upload-artifact@v4
         with:

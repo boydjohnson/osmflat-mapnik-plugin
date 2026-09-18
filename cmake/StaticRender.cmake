@@ -5,9 +5,14 @@
 # Included from the top-level CMakeLists after the Rust crate is imported
 # (the plugin sources need the `osmflat_capi` target and its cbindgen header).
 
+# PROJ (and the dependencies built from source below) have C sources; the
+# plugin itself is C++-only, so C is only enabled for this build.
+enable_language(C)
+
 set(OSMFLAT_MAPNIK_GIT_TAG "v4.2.2" CACHE STRING "Mapnik tag to build statically")
 option(OSMFLAT_FULLY_STATIC "Link render with -static (Linux/musl: no shared libs at all)" OFF)
 set(OSMFLAT_HARFBUZZ_GIT_TAG "11.2.1" CACHE STRING "harfbuzz tag built from source on macOS")
+set(OSMFLAT_PROJ_GIT_TAG "9.9.0" CACHE STRING "PROJ tag built from source")
 
 if(APPLE AND OSMFLAT_FULLY_STATIC)
     message(FATAL_ERROR "OSMFLAT_FULLY_STATIC needs musl; macOS always links libSystem dynamically")
@@ -15,9 +20,8 @@ endif()
 
 # --- Mapnik build options ----------------------------------------------------
 # Only what `render` uses: the AGG renderer writing PNG, fonts via FreeType +
-# HarfBuzz + ICU. No PROJ (render rewrites the WGS84 / web-mercator proj4
-# strings to their EPSG codes, which Mapnik handles natively), no Cairo, no
-# stock input plugins.
+# HarfBuzz + ICU, and PROJ (built from source below) for reprojection. No
+# Cairo, no stock input plugins.
 set(OSMFLAT_MAPNIK_OPTIONS
     BUILD_SHARED_LIBS=OFF
     BUILD_SHARED_PLUGINS=OFF
@@ -40,7 +44,7 @@ set(OSMFLAT_MAPNIK_OPTIONS
     USE_AVIF=OFF
     USE_LIBXML2=OFF
     USE_CAIRO=OFF
-    USE_PROJ=OFF
+    USE_PROJ=ON
     USE_GRID_RENDERER=OFF
     USE_SVG_RENDERER=OFF
     # The plugin's MAPNIK_LOG_DEBUG lines (OSMFLAT_LOG_DEBUG=1) need this.
@@ -79,9 +83,9 @@ if(APPLE)
     # the dylib over the archive. Mapnik's own workaround drops them; it links
     # ICU::uc/data/i18n itself, by full path to the .a.
     set(USE_BOOST_REGEX_ICU_WORKAROUND ON CACHE BOOL "" FORCE)
-    # Homebrew keeps icu4c, zlib and bzip2 keg-only: their archives aren't
-    # symlinked into the prefix, so nothing finds libicuuc.a / libz.a /
-    # libbz2.a without being told where they live.
+    # Homebrew keeps icu4c, zlib, bzip2 and sqlite keg-only: their archives
+    # aren't symlinked into the prefix, so nothing finds libicuuc.a / libz.a /
+    # libbz2.a / libsqlite3.a without being told where they live.
     find_program(OSMFLAT_BREW brew)
     if(OSMFLAT_BREW)
         if(NOT ICU_ROOT AND NOT DEFINED ENV{ICU_ROOT})
@@ -94,7 +98,7 @@ if(APPLE)
                 endif()
             endforeach()
         endif()
-        foreach(keg zlib bzip2)
+        foreach(keg zlib bzip2 sqlite)
             execute_process(COMMAND ${OSMFLAT_BREW} --prefix ${keg}
                 OUTPUT_VARIABLE keg_prefix OUTPUT_STRIP_TRAILING_WHITESPACE
                 ERROR_QUIET)
@@ -154,6 +158,58 @@ if(OSMFLAT_FULLY_STATIC)
     # fail on a missing harfbuzz::harfbuzz target.
     unset(harfbuzz_FOUND CACHE)
 endif()
+
+# --- PROJ ----------------------------------------------------------------------
+# Built from source on every platform: both Alpine's and Homebrew's PROJ are
+# built with libtiff + libcurl (for reading/downloading datum-shift grids),
+# which would drag OpenSSL and friends into the binary. Without them, a
+# transformation that needs a grid falls back to PROJ's ballpark one --
+# roughly a metre between WGS84 and NAD83, invisible at map scale.
+#
+# A static PROJ embeds proj.db in the library (EMBED_RESOURCE_FILES defaults
+# ON when BUILD_SHARED_LIBS is OFF); USE_ONLY_EMBEDDED_RESOURCE_FILES stops it
+# also looking for a proj.db on disk, so the binary behaves the same
+# everywhere and there's no data directory to ship.
+foreach(opt
+        ENABLE_TIFF=OFF ENABLE_CURL=OFF BUILD_PROJSYNC=OFF
+        BUILD_APPS=OFF BUILD_TESTING=OFF
+        EMBED_RESOURCE_FILES=ON USE_ONLY_EMBEDDED_RESOURCE_FILES=ON)
+    string(REPLACE "=" ";" kv "${opt}")
+    list(GET kv 0 key)
+    list(GET kv 1 value)
+    set(${key} ${value} CACHE BOOL "" FORCE)
+endforeach()
+set(NLOHMANN_JSON_ORIGIN "internal" CACHE STRING "" FORCE)
+FetchContent_Declare(
+    proj
+    GIT_REPOSITORY https://github.com/OSGeo/PROJ.git
+    GIT_TAG ${OSMFLAT_PROJ_GIT_TAG}
+    GIT_SHALLOW TRUE
+    EXCLUDE_FROM_ALL
+)
+FetchContent_MakeAvailable(proj)
+
+# Mapnik looks for PROJ with find_package(PROJ) and reads PROJ_LIBRARIES /
+# PROJ_INCLUDE_DIRS / PROJ_VERSION_*. Point that at a generated config for the
+# target we just built, as with harfbuzz on macOS. PROJ_INCLUDE_DIRS must be a
+# single path: mapnik wraps it in $<BUILD_INTERFACE:...>, which a ;-list would
+# split, leaking a bare source-tree path into its install(EXPORT). The `proj`
+# target carries the rest of its include dirs itself.
+string(REPLACE "." ";" _proj_v "${OSMFLAT_PROJ_GIT_TAG}")
+list(GET _proj_v 0 _proj_major)
+list(GET _proj_v 1 _proj_minor)
+list(GET _proj_v 2 _proj_patch)
+set(_proj_shim "${CMAKE_BINARY_DIR}/proj-config-shim")
+file(WRITE "${_proj_shim}/PROJConfig.cmake"
+"set(PROJ_FOUND TRUE)
+set(PROJ_VERSION \"${OSMFLAT_PROJ_GIT_TAG}\")
+set(PROJ_VERSION_MAJOR ${_proj_major})
+set(PROJ_VERSION_MINOR ${_proj_minor})
+set(PROJ_VERSION_PATCH ${_proj_patch})
+set(PROJ_LIBRARIES proj)
+set(PROJ_INCLUDE_DIRS \"${proj_SOURCE_DIR}/src\")
+")
+set(PROJ_DIR "${_proj_shim}" CACHE PATH "" FORCE)
 
 # Read by the generated plugins/input/osmflat/CMakeLists.txt.
 set(OSMFLAT_SOURCE_DIR ${CMAKE_SOURCE_DIR})
@@ -223,3 +279,14 @@ add_test(NAME render_relations
     COMMAND render ${CMAKE_BINARY_DIR}/no-plugins ${CMAKE_SOURCE_DIR}/test/style-relations.xml
         ${FIXTURES}/baarle-hertog.osm.flat ${CMAKE_BINARY_DIR}/render_relations.png
         4.75 51.38 5.02 51.49 500 500)
+
+# The same fixture drawn in the Dutch national grid (EPSG:28992, RD New, on
+# the Bessel ellipsoid): exercises PROJ end to end -- the EPSG lookup has to
+# come from the proj.db embedded in the binary, since the smoke test runs where
+# no proj.db exists. The bbox is the render_relations one, transformed.
+set(_rd_png ${CMAKE_BINARY_DIR}/render_relations_rd.png)
+add_test(NAME render_relations_projected
+    COMMAND ${CMAKE_COMMAND}
+        -DRENDER=$<TARGET_FILE:render> -DOUT=${_rd_png} -DMIN_BYTES=8000
+        "-DARGS=${CMAKE_BINARY_DIR}/no-plugins;${CMAKE_SOURCE_DIR}/test/style-relations-rd.xml;${FIXTURES}/baarle-hertog.osm.flat;${_rd_png};110639;376952;129497;389060;600;385"
+        -P ${CMAKE_SOURCE_DIR}/cmake/check-render.cmake)

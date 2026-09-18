@@ -55,41 +55,7 @@ osmflat_patch_file(src/CMakeLists.txt
     "    $<$<AND:$<NOT:$<BOOL:\${BUILD_SHARED_PLUGINS}>>,$<TARGET_EXISTS:input-tiles>>:MAPNIK_STATIC_PLUGIN_TILES>\n    $<$<AND:$<NOT:$<BOOL:\${BUILD_SHARED_PLUGINS}>>,$<TARGET_EXISTS:input-osmflat>>:MAPNIK_STATIC_PLUGIN_OSMFLAT>\n"
     "MAPNIK_STATIC_PLUGIN_OSMFLAT")
 
-# 4. Accept "+proj=longlat ..." without PROJ, classified the way PROJ
-#    classifies it.
-#
-#    Built with PROJ, `proj_get_type` reports a proj4 longlat string as
-#    PJ_TYPE_OTHER_CRS, so `is_geographic_` stays false and scale denominators
-#    come out in degrees -- which is what every style written against this
-#    plugin is tuned for (a MaxScaleDenominator of 0.1 ~ neighborhood). Without
-#    PROJ, Mapnik knows only "epsg:4326" (geographic, so ~111319x larger
-#    denominators) and throws on anything else. Matching PROJ's classification
-#    here keeps styles renderer-independent; other proj4 strings still throw.
-osmflat_patch_file(src/projection.cpp
-[==[#ifdef MAPNIK_USE_PROJ
-        init_proj();
-#else
-        throw std::runtime_error(std::string("Cannot initialize projection '") + params_ +
-                                 " ' without proj support (-DMAPNIK_USE_PROJ)");
-#endif]==]
-[==[#ifdef MAPNIK_USE_PROJ
-        init_proj();
-#else
-        // osmflat: PROJ reports a proj4 longlat string as a non-geographic
-        // "other" CRS; mirror that so scale denominators stay in degrees.
-        if (params_.rfind("+proj=longlat", 0) == 0)
-        {
-            is_geographic_ = false;
-        }
-        else
-        {
-            throw std::runtime_error(std::string("Cannot initialize projection '") + params_ +
-                                     " ' without proj support (-DMAPNIK_USE_PROJ)");
-        }
-#endif]==]
-[==[osmflat: PROJ reports a proj4 longlat string]==])
-
-# 5. Register it in the static datasource table.
+# 4. Register it in the static datasource table.
 osmflat_patch_file(src/datasource_cache_static.cpp
     "#if defined(MAPNIK_STATIC_PLUGIN_TOPOJSON)\n#include \"input/topojson/topojson_datasource.hpp\"\n#endif\n"
     "#if defined(MAPNIK_STATIC_PLUGIN_TOPOJSON)\n#include \"input/topojson/topojson_datasource.hpp\"\n#endif\n#if defined(MAPNIK_STATIC_PLUGIN_OSMFLAT)\n#include \"input/osmflat/osmflat_datasource.hpp\"\n#endif\n"

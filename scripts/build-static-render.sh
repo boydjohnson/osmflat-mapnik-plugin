@@ -31,6 +31,7 @@ apk add --cache-dir "$APK_CACHE" \
     freetype-dev freetype-static \
     harfbuzz-dev harfbuzz-static graphite2-static glib-static pcre2-static \
     libpng-dev libpng-static zlib-dev zlib-static bzip2-static brotli-static expat-static \
+    sqlite sqlite-dev sqlite-static \
     font-dejavu
 
 cmake -S . -B "$BUILD_DIR" -G Ninja \

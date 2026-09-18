@@ -79,20 +79,31 @@ module would pull in a second, shared mapnik.
 
 Mapnik's static-plugin table is compile-time, so
 `cmake/static-mapnik/patch-mapnik.cmake` edits the fetched mapnik tree: it adds
-`plugins/input/osmflat`, links it into `libmapnik`, registers it in
-`datasource_cache_static.cpp`, and teaches `projection` to accept
-`+proj=longlat ...` (see below). Every edit anchors on an exact upstream string
+`plugins/input/osmflat`, links it into `libmapnik`, and registers it in
+`datasource_cache_static.cpp`. Every edit anchors on an exact upstream string
 and fails loudly if mapnik moved it.
 
-Trimmed to what `render` needs: AGG + PNG, freetype/harfbuzz/ICU for text. No
-cairo, PROJ, grid/SVG renderers, or stock input plugins. Dropping PROJ is what
-keeps the binary free of a 9 MB `proj.db`, but mapnik then only knows
-`epsg:4326` / `epsg:3857` by name — and, more subtly, classifies `epsg:4326` as
-*geographic*, which scales `scale_denominator` by ~111319 versus what PROJ
-reports for the equivalent `+proj=longlat +datum=WGS84 +no_defs`. Since every
-style here is tuned against the degree-based numbers (`0.1` ≈ neighborhood),
-the patch makes a PROJ-less mapnik classify `+proj=longlat` exactly as PROJ
-does, so styles render identically either way. Other proj4 strings still throw.
+Trimmed to what `render` needs: AGG + PNG, freetype/harfbuzz/ICU for text,
+Boost.Regex for `.match()`/`.replace()` in filters, and PROJ for reprojection.
+No cairo, grid/SVG renderers, or stock input plugins.
+
+PROJ (9.9.0) is built from source on every platform with libtiff and libcurl
+off — Alpine's and Homebrew's builds pull both in (and OpenSSL behind curl)
+only to read and download datum-shift grids. Without grids, a transformation
+that wants one uses PROJ's ballpark fallback: about a metre between WGS84 and
+NAD83, invisible at map scale. A static PROJ embeds `proj.db` in the library,
+and `USE_ONLY_EMBEDDED_RESOURCE_FILES` keeps it from looking for one on disk,
+so there's no data directory to ship and the binary behaves the same
+everywhere. So a Map can use any EPSG code or proj string —
+`test/style-relations-rd.xml` draws the fixture in the Dutch national grid.
+Note that in a projected CRS, `scale_denominator` is in metres, not the tiny
+degree-based numbers `+proj=longlat` maps use.
+
+(Before PROJ was in, mapnik knew only `epsg:4326` / `epsg:3857` by name and
+classified `epsg:4326` as *geographic* — scaling `scale_denominator` ~111319x
+against what PROJ reports for `+proj=longlat +datum=WGS84 +no_defs`, which
+would have silently broken every style's `MaxScaleDenominator` gating. With
+PROJ linked, both builds classify it identically by construction.)
 
 Fonts: `$MAPNIK_FONT_DIR` if set, else `fonts/` beside the binary (which is how
 the release tarball ships DejaVu).

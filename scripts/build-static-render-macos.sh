@@ -20,7 +20,7 @@ export MACOSX_DEPLOYMENT_TARGET
 # runs on developer machines too, and shouldn't reshuffle someone's Homebrew.
 export HOMEBREW_NO_AUTO_UPDATE=1
 export HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK=1
-brew install --quiet boost icu4c@76 freetype libpng bzip2 zlib ninja cmake >/dev/null
+brew install --quiet boost icu4c@76 freetype libpng bzip2 zlib sqlite ninja cmake >/dev/null
 
 # DejaVu is what the styles ask for by face-name, and macOS doesn't ship it.
 # Pinned rather than taken from a cask, so both platforms package the same
