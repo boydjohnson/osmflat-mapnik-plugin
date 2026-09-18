@@ -43,7 +43,9 @@ scripts/build-static-render-macos.sh reproduce these archives, and
 cmake/static-mapnik/ holds the patches applied to the mapnik source tree.
 
 Also linked in: boost (BSL-1.0), ICU (Unicode-3.0), freetype (FTL), harfbuzz
-(MIT), libpng (PNG-2.0), zlib (Zlib), brotli (MIT), bzip2 (bzip2-1.0.6).
+(MIT), PROJ (MIT, with its proj.db embedded), SQLite (public domain),
+nlohmann/json (MIT), libpng (PNG-2.0), zlib (Zlib), brotli (MIT),
+bzip2 (bzip2-1.0.6).
 The linux/musl build additionally links glib (LGPL-2.1), graphite2
 (LGPL-2.1), pcre2 (BSD-3-Clause) and musl (MIT).
 

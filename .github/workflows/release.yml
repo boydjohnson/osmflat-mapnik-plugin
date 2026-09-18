@@ -5,8 +5,9 @@ name: release
 # which is the only way to find out that an arch broke before a tag is already
 # cut and public.
 #
-# Linux/musl only: a fully static binary needs musl, and macOS can't link
-# libSystem statically (see the static-render section of the README).
+# Linux archives are fully static (musl). macOS can't link libSystem
+# statically, so its archive bundles mapnik and every third-party library but
+# leaves macOS' own dylibs dynamic (see the static-render section of the README).
 on:
   push:
     tags: ["v*"]
@@ -59,6 +60,19 @@ jobs:
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
+      # Docker Hub pulls fail intermittently (connection resets, rate-limit
+      # blips) before any build starts. Pull up front with backoff so a flaky
+      # registry doesn't fail the job; later `docker run`s use the local image.
+      - name: Pull alpine (with retries)
+        if: runner.os == 'Linux'
+        run: |
+          for attempt in 1 2 3 4 5; do
+            docker pull alpine:3.22 && exit 0
+            echo "docker pull failed (attempt $attempt), retrying in $((attempt * 10))s" >&2
+            sleep $((attempt * 10))
+          done
+          exit 1
+
       # No build cache here, unlike the CI workflow: a published binary should
       # come from a clean build of the tagged tree, not a tree carried over
       # from an earlier run.
@@ -90,7 +104,14 @@ jobs:
             ./render /no/plugins /src/test/style-relations.xml \
               /src/test/fixtures/baarle-hertog.osm.flat /tmp/out.png \
               4.75 51.38 5.02 51.49 500 500
-            test -s /tmp/out.png'
+            test -s /tmp/out.png
+            # Reprojected into EPSG:28992: the EPSG lookup can only come from
+            # the proj.db embedded in the binary -- there is none on this image.
+            test -z "$(find / -name proj.db -not -path "/src/*" 2>/dev/null)"
+            ./render /no/plugins /src/test/style-relations-rd.xml \
+              /src/test/fixtures/baarle-hertog.osm.flat /tmp/rd.png \
+              110639 376952 129497 389060 600 385
+            test "$(wc -c < /tmp/rd.png)" -gt 8000'
 
       - uses: actions/upload-artifact@v4
         with:

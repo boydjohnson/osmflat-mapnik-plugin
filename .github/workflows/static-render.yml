@@ -52,6 +52,19 @@ jobs:
             static-render-${{ matrix.platform }}-${{ hashFiles('cmake/**', 'scripts/*.sh', 'CMakeLists.txt') }}-
             static-render-${{ matrix.platform }}-
 
+      # Docker Hub pulls fail intermittently (connection resets, rate-limit
+      # blips) before any build starts. Pull up front with backoff so a flaky
+      # registry doesn't fail the job; later `docker run`s use the local image.
+      - name: Pull alpine (with retries)
+        if: runner.os == 'Linux'
+        run: |
+          for attempt in 1 2 3 4 5; do
+            docker pull alpine:3.22 && exit 0
+            echo "docker pull failed (attempt $attempt), retrying in $((attempt * 10))s" >&2
+            sleep $((attempt * 10))
+          done
+          exit 1
+
       # Run the whole build in Alpine via `docker run` rather than a job-level
       # `container:` -- GitHub's JavaScript actions don't run inside Alpine
       # containers on arm64 runners, and this is exactly what a local
