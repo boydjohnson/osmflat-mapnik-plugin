@@ -29,6 +29,14 @@
 #include <sstream>
 #include <string>
 
+#ifdef OSMFLAT_EMBEDDED_ICU_DATA
+#include <unicode/udata.h>
+#include <unicode/utypes.h>
+// ICU's common data, .incbin'd by cmake/icu-data.S.in (static builds whose
+// libicudata.a is a stub -- see cmake/StaticRender.cmake).
+extern "C" const char osmflat_icudt[];
+#endif
+
 static std::string slurp(const std::string& path)
 {
     std::ifstream in(path);
@@ -65,6 +73,19 @@ static std::string executable_dir(const char* argv0)
 
 int main(int argc, char** argv)
 {
+#ifdef OSMFLAT_EMBEDDED_ICU_DATA
+    // Must precede any ICU data load. Registered this way, the embedded copy
+    // wins over ICU_DATA / the distro's data dir, so the host's ICU version
+    // (or lack of one) doesn't matter.
+    {
+        UErrorCode status = U_ZERO_ERROR;
+        udata_setCommonData(osmflat_icudt, &status);
+        if (U_FAILURE(status)) {
+            std::cerr << "render: embedded ICU data rejected: " << u_errorName(status) << "\n";
+            return EXIT_FAILURE;
+        }
+    }
+#endif
     if (argc != 9 && argc != 11) {
         std::cerr << "usage: render <plugin_dir> <style.xml> <archive_dir> "
                      "<out.png> <minx> <miny> <maxx> <maxy> [width height]\n";
